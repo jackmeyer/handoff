@@ -1,7 +1,7 @@
 import express, { type Request, type RequestHandler } from 'express';
 import { DatabaseSync } from 'node:sqlite';
 import { createHash, createHmac, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { pipeline } from 'node:stream/promises';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -132,12 +132,17 @@ export function createApp(cfg: Config) {
   };
 
   // ---- owned-file lifecycle ------------------------------------------------
-  // Owned files always live at filesDir/<token>/. Deletion is derived from the
-  // token, never from the stored path, so a link to a library file can never
-  // delete the user's original.
+  // Uploads live at filesDir/<token>/ and are the only files Handoff may delete.
+  // Deletion is derived from the token, never from the stored path, so a link to
+  // a library file can never reach the user's original.
   const ownedDir = (token: string) => path.join(filesDir, token);
 
+  /** In-flight zip jobs, so deleting a link actually cancels the work. */
+  const zipping = new Map<string, ChildProcess>();
+
   const remove = (l: Link) => {
+    zipping.get(l.token)?.kill();
+    zipping.delete(l.token);
     if (l.owned) fs.rmSync(ownedDir(l.token), { recursive: true, force: true });
     q.del.run(l.token);
   };
@@ -146,6 +151,7 @@ export function createApp(cfg: Config) {
     for (const l of q.dead.all(Date.now()) as Link[]) remove(l);
   };
 
+  /** Archive size grows as zip works; report the partial size so the UI can tick. */
   const liveSize = (l: Link) => {
     if (l.status !== 'zipping') return l.size;
     try {
@@ -157,15 +163,21 @@ export function createApp(cfg: Config) {
 
   const startZip = (token: string, src: string, out: string) => {
     fs.mkdirSync(path.dirname(out), { recursive: true });
-    // ponytail: store-only (-0). Photos/video are already compressed, so deflate
-    // buys ~nothing and costs hours on 40GB. Switch to -1 if you ever zip text.
+    // ponytail: store-only (-0). Photos and video are already compressed, so
+    // deflate buys ~nothing and costs hours on 40GB. Use -1 if you ever zip text.
     const p = spawn('zip', ['-r', '-0', '-q', out, path.basename(src)], {
       cwd: path.dirname(src),
       stdio: 'ignore',
     });
-    const fail = () => q.finish.run('error', 0, token);
+    zipping.set(token, p);
+    const fail = () => {
+      zipping.delete(token);
+      q.finish.run('error', 0, token);
+    };
     p.on('error', fail);
-    p.on('close', (code) => {
+    p.on('close', (code, signal) => {
+      zipping.delete(token);
+      if (signal) return; // cancelled by remove(); the row is already gone
       if (code !== 0 || !fs.existsSync(out)) return fail();
       q.finish.run('ready', fs.statSync(out).size, token);
     });
@@ -258,13 +270,16 @@ export function createApp(cfg: Config) {
     if (b.source === 'library') {
       const target = inLibrary(String(b.path ?? ''));
       if (!target) return res.status(400).json({ error: 'Bad path' });
-      if (fs.statSync(target).isDirectory()) {
+      const stat = fs.statSync(target);
+      if (stat.isDirectory()) {
+        // owned = 1: the archive is ours, lives under /data, and expires with the link.
         const name = `${path.basename(target)}.zip`;
         const out = path.join(ownedDir(token), name);
         row(name, out, 1, 0, 'zipping');
         startZip(token, target, out);
       } else {
-        row(path.basename(target), target, 0, fs.statSync(target).size, 'ready');
+        // owned = 0: served straight off the share, never copied and never deleted.
+        row(path.basename(target), target, 0, stat.size, 'ready');
       }
     } else if (b.source === 'upload') {
       const name = path.basename(String(b.name ?? '')).replace(/[/\\]/g, '') || 'download';

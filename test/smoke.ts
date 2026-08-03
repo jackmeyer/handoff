@@ -25,6 +25,12 @@ fs.writeFileSync(original, 'abcdefghij');
 fs.writeFileSync(path.join(libraryDir, 'photos', 'a.txt'), 'one');
 fs.writeFileSync(path.join(libraryDir, 'photos', 'b.txt'), 'two');
 
+// Big enough that zip is still running when the cancel check fires.
+fs.mkdirSync(path.join(libraryDir, 'big'));
+for (let i = 0; i < 8; i++) {
+  fs.writeFileSync(path.join(libraryDir, 'big', `blob${i}.bin`), Buffer.alloc(12 << 20, i));
+}
+
 const PASSWORD = 'correct-horse';
 const { app, db, sweep } = createApp({ dataDir, libraryDir, adminPassword: PASSWORD });
 const server = app.listen(0);
@@ -67,7 +73,7 @@ for (const bad of ['../..', '/etc', '../../etc', 'photos/../../..']) {
 const listing = (await (await call('/api/browse?p=')).json()) as { entries: { name: string }[] };
 assert.deepEqual(
   listing.entries.map((e) => e.name),
-  ['photos', 'notes.txt'],
+  ['big', 'photos', 'notes.txt'],
   'directories sort first',
 );
 
@@ -127,25 +133,50 @@ assert.equal(await opened.text(), 'abcdefghij', 'unlocked download works');
 
 step('per-link password');
 
-// --- folder -> zip -----------------------------------------------------------
-const zipLink = await mkLink({ source: 'library', path: 'photos' });
-const zipPath = path.join(dataDir, 'files', zipLink.token, 'photos.zip');
-for (let i = 0; i < 100 && !fs.existsSync(zipPath); i++) await new Promise((r) => setTimeout(r, 50));
-const zipped = await (async () => {
-  for (let i = 0; i < 100; i++) {
+// --- folders: browse in, share as a zip --------------------------------------
+const sub = (await (await call('/api/browse?p=photos')).json()) as {
+  entries: { name: string }[];
+  hasParent: boolean;
+};
+assert.deepEqual(sub.entries.map((e) => e.name), ['a.txt', 'b.txt'], 'can browse into a subfolder');
+assert.ok(sub.hasParent, 'subfolder offers a way back up');
+
+const untilReady = async (token: string) => {
+  for (let i = 0; i < 200; i++) {
     const rows = (await (await call('/api/links')).json()) as { token: string; status: string }[];
-    const row = rows.find((l) => l.token === zipLink.token)!;
-    if (row.status !== 'zipping') return row;
+    const row = rows.find((l) => l.token === token);
+    if (row && row.status !== 'zipping') return row;
     await new Promise((r) => setTimeout(r, 50));
   }
   throw new Error('zip never finished');
-})();
-assert.equal(zipped.status, 'ready', 'folder zipped');
+};
+
+const zipLink = await mkLink({ source: 'library', path: 'photos' });
+assert.equal((await untilReady(zipLink.token)).status, 'ready', 'folder zipped');
 const zipBytes = Buffer.from(await (await fetch(`${base}/f/${zipLink.token}/photos.zip`)).arrayBuffer());
 assert.equal(zipBytes.subarray(0, 2).toString(), 'PK', 'served a real zip');
 assert.ok(zipBytes.includes(Buffer.from('photos/a.txt')), 'zip nests entries under the folder name');
+// Store-only: entries are the literal file bytes, no compression to undo.
+assert.ok(zipBytes.includes(Buffer.from('one')) && zipBytes.includes(Buffer.from('two')), 'stored, not deflated');
 
-step('folder zipped');
+// The originals are still there after we archived them.
+assert.equal(fs.readFileSync(path.join(libraryDir, 'photos', 'a.txt'), 'utf8'), 'one', 'zipping did not move the source');
+
+// Deleting a link mid-zip must cancel the job and take the partial archive with it.
+const doomed = await mkLink({ source: 'library', path: 'big' });
+const doomedDir = path.join(dataDir, 'files', doomed.token);
+const midFlight = (await (await call('/api/links')).json()) as { token: string; status: string }[];
+assert.equal(
+  midFlight.find((l) => l.token === doomed.token)!.status,
+  'zipping',
+  'cancel check is racing a real in-progress zip',
+);
+assert.equal((await call(`/api/links/${doomed.token}`, { method: 'DELETE' })).status, 200);
+await new Promise((r) => setTimeout(r, 500));
+assert.ok(!fs.existsSync(doomedDir), 'cancelled zip left nothing behind');
+assert.ok(fs.existsSync(path.join(libraryDir, 'big', 'blob0.bin')), 'cancelling did not touch the source');
+
+step('folders browse, zip, and cancel cleanly');
 
 // --- download limit ----------------------------------------------------------
 const capped = await mkLink({ source: 'library', path: 'notes.txt', maxDownloads: 1 });

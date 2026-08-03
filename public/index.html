@@ -40,7 +40,9 @@
   progress { width: 100%; height: .5rem; }
   .err { color: #dc2626; }
   .hide { display: none !important; }
-  #crumbs { font-size: .85rem; color: var(--dim); margin-bottom: .5rem; overflow-wrap: anywhere; }
+  #crumbs { display: flex; gap: 1rem; align-items: center; justify-content: space-between;
+            font-size: .85rem; color: var(--dim); margin-bottom: .5rem; overflow-wrap: anywhere; }
+  #shareFolder { flex: none; font-size: .8rem; padding: .3rem .7rem; }
 </style>
 
 <h1>Handoff</h1>
@@ -65,7 +67,10 @@
   </section>
 
   <section id="paneLibrary" class="hide">
-    <div id="crumbs"></div>
+    <div id="crumbs">
+      <span id="here"></span>
+      <button id="shareFolder" type="button">Share this folder as a zip</button>
+    </div>
     <ul id="files"></ul>
   </section>
 
@@ -142,10 +147,17 @@
   // ---- library tab ---------------------------------------------------------
   async function browse(p = '') {
     const r = await api(`/api/browse?p=${encodeURIComponent(p)}`);
-    if (!r.ok) return ($('crumbs').textContent = 'Cannot read that folder.');
+    if (!r.ok) return ($('here').textContent = 'Cannot read that folder.');
     const { path, hasParent, entries } = await r.json();
-    $('crumbs').textContent = `/${path} — click to select, double-click a folder to open it`;
+    setPick(null); // moving somewhere else invalidates whatever was selected
+    $('here').textContent = `/${path}`;
     $('files').innerHTML = '';
+
+    // Folders open on click, so sharing one is a separate button for wherever you are.
+    const folder = path.split('/').pop();
+    $('shareFolder').textContent = folder ? `Share "${folder}" as a zip` : 'Share everything as a zip';
+    $('shareFolder').onclick = () =>
+      setPick({ source: 'library', path, label: `${folder || 'entire library'} (folder → zip)` });
 
     if (hasParent) {
       const up = document.createElement('li');
@@ -159,11 +171,11 @@
       li.innerHTML = `<span>${e.dir ? '📁' : '📄'}</span><span></span><span class="size">${e.dir ? 'folder' : fmt(e.size)}</span>`;
       li.children[1].textContent = e.name;
       li.onclick = () => {
+        if (e.dir) return browse(full);
         for (const s of $('files').children) s.removeAttribute('aria-selected');
         li.setAttribute('aria-selected', 'true');
-        setPick({ source: 'library', path: full, label: e.dir ? `${e.name} (folder → zip)` : e.name });
+        setPick({ source: 'library', path: full, label: e.name });
       };
-      li.ondblclick = () => e.dir && browse(full);
       $('files').append(li);
     }
   }
@@ -263,7 +275,8 @@
         setTimeout(() => (copyBtn.textContent = 'Copy'), 1500);
       };
       tr.querySelector('[data-del]').onclick = async () => {
-        if (!confirm(`Delete the link for ${l.name}?`)) return;
+        const what = l.status === 'zipping' ? `Cancel zipping ${l.name}?` : `Delete the link for ${l.name}?`;
+        if (!confirm(what)) return;
         await api(`/api/links/${l.token}`, { method: 'DELETE' });
         refresh();
       };

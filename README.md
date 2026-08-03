@@ -1,16 +1,20 @@
 # Handoff
 
-Self-hosted share links for big files. Point it at a folder on your array, set an expiry, get a link.
+Self-hosted share links for big files. Mount a folder, pick a file or a whole folder, get a link with
+an expiry date.
 
 Built for the "just send me the wedding photos" problem — the one where the answer shouldn't be
 a Google Drive upload or a whole NextCloud install.
 
-- **Pick a folder** on your server → Handoff zips it once and serves the archive.
-- **Pick a single file** → served in place, no copy, no wasted disk.
-- **Or drag a file into the browser** → uploaded to the container.
+- **Mount a folder** the way you would for any Docker container, then browse it in the admin UI.
+- **Click a file** to share it. It's served straight off the share — no copy, no wasted disk.
+- **Or share a whole folder**, which Handoff zips once with no compression. The link works right away;
+  anyone who opens it early gets a "still being prepared" page that refreshes itself.
+- **Or drag a file into the browser** to upload it into the container.
 - Every link gets an expiry, and optionally a password and a download limit.
-- When a link expires, the link and anything Handoff created are deleted. **Files on your shares are
-  never modified or removed.**
+- When a link expires it's deleted, along with anything Handoff created for it — an uploaded file, or a
+  generated archive. **Files in your mounted folder are only ever read.** Handoff has no code path that
+  writes to it.
 - Downloads support HTTP range requests, so a 40 GB archive resumes instead of restarting when your
   dad's connection drops.
 
@@ -23,8 +27,8 @@ Manage Repositories*.
 
 | Setting | What to put |
 | --- | --- |
-| **Appdata** (`/data`) | `/mnt/user/appdata/handoff` — needs room for the largest archive you'll share |
-| **Library** (`/library`) | The share you want to share *from*, e.g. `/mnt/user/Photos`. Mounted read-only. Optional — leave it out and Handoff is upload-only |
+| **Appdata** (`/data`) | `/mnt/user/appdata/handoff` — see the disk-space note below if you plan to share folders |
+| **Library** (`/library`) | The folder you want to browse and share from, e.g. `/mnt/user/Photos`. Mounted read-only. Optional — leave it out and Handoff is upload-only |
 | **Admin password** | Required, 8+ characters. Gates the upload UI only |
 | **Public URL** | Optional, e.g. `https://share.example.com`. Set it so copied links are the ones your recipients can open |
 | **WebUI port** | `8080` |
@@ -37,6 +41,12 @@ Cloudflare Tunnel). Two things to check there:
 - Cloudflare's proxied (orange-cloud) traffic is a poor fit for tens of gigabytes. Use a tunnel with
   proxying off, or point DNS straight at your origin.
 
+**Disk space.** Generated archives and browser uploads live in `/data`. Zipping a 40 GB folder needs
+40 GB free there, and on a default Unraid setup `/mnt/user/appdata` sits on your cache SSD — which is
+usually the smallest disk you own. If you plan to share large folders, point the Appdata mapping at an
+array share with room (`/mnt/user/handoff`) instead. Single files and uploads don't have this problem:
+a file shared from the mounted folder is streamed in place and copies nothing.
+
 ## Or with Docker
 
 ```bash
@@ -48,19 +58,24 @@ docker run -d --name handoff -p 8080:8080 \
   ghcr.io/YOUR_GITHUB_USER/handoff:latest
 ```
 
-## Sending a 40 GB folder
+## Sending a folder of wedding photos
 
-1. Open the web UI, sign in.
-2. **Pick from server** → double-click into your share → single-click the folder.
+1. Sign in, open **Pick from server**, and click through to the folder. Clicking a folder opens it.
+2. Once you're inside it, click **Share "Wedding Photos" as a zip** at the top right.
 3. Expiry `7 days`, password if you want one.
-4. **Create link.** Handoff starts zipping; the row shows the archive growing. The link works
-   immediately — anyone who opens it early sees a "still being prepared" page that refreshes itself.
-5. Copy the link (it's already on your clipboard) and send it.
+4. **Create link** — it's copied to your clipboard. Send it.
 
-A week later the zip deletes itself. Your original folder is untouched.
+Zipping starts immediately and the row shows the archive growing. You can send the link before it
+finishes. Deleting a link that's still zipping cancels the job and cleans up the partial archive.
+
+Archives are created with `zip -r -0` — stored, not compressed. Photos and video are already
+compressed, so deflate buys nothing and costs hours on tens of gigabytes. The archive contains a single
+top-level folder, so your dad doesn't get 3,000 loose files in his Downloads.
+
+A week later the archive deletes itself. Your original folder is untouched.
 
 Uploads through the browser aren't resumable — if the connection drops mid-upload you start over. For
-anything genuinely large, copy it to the share over SMB and use **Pick from server** instead.
+anything genuinely large, put it on the share and use **Pick from server** instead.
 
 ## Configuration
 
@@ -68,8 +83,8 @@ anything genuinely large, copy it to the share over SMB and use **Pick from serv
 | --- | --- | --- |
 | `ADMIN_PASSWORD` | — | Required. 8+ chars. Container refuses to start without it |
 | `PORT` | `8080` | HTTP port |
-| `DATA_DIR` | `/data` | Database, uploads, generated archives |
-| `LIBRARY_DIR` | `/library` | Read-only source tree. Absent → the browse tab is hidden |
+| `DATA_DIR` | `/data` | Database, browser uploads, generated archives |
+| `LIBRARY_DIR` | `/library` | Read-only folder to browse. Absent → the browse tab is hidden |
 | `PUBLIC_URL` | — | Base URL used when generating links. Falls back to the request's host |
 | `PUID` / `PGID` / `UMASK` | `99` / `100` / `022` | Standard Unraid ownership |
 
@@ -81,11 +96,11 @@ One Node process, one SQLite file, no build step. About 400 lines.
 - Per-link passwords are scrypt-hashed. The admin password is compared in constant time.
 - Library paths are resolved through `realpath` and checked against the library root, so `../` and
   symlinks can't escape.
-- **Deletion is derived from the link token, not from the stored file path.** A link to one of your
-  library files has nothing under `/data` to delete, so expiry physically cannot reach your originals.
-  There's a test for exactly this.
-- Folder archives use store-only zip (`-0`). Photos and video are already compressed; deflate would
-  buy nothing and cost hours.
+- **Deletion is derived from the link token, not from the stored file path.** Only uploads and
+  generated archives live under `/data/files/<token>/`, and that's the only thing expiry deletes. A link
+  to a file in your mounted folder has nothing to delete, so expiry physically cannot reach it. There's
+  a test for exactly this.
+- Folder archives use store-only zip (`-0`), and an in-flight zip is killed if you delete its link.
 - A sweeper runs every 60 seconds and on boot.
 
 ## Development
@@ -100,7 +115,8 @@ npm test && npm run typecheck
 ```
 
 `npm test` is a single file that starts the real server and exercises auth, path traversal, range
-requests, uploads, per-link passwords, download limits, zipping, and the expiry rules.
+requests, uploads, per-link passwords, download limits, zipping and mid-zip cancellation, and the
+expiry rules.
 
 Node 24+ runs the TypeScript directly — there is nothing to compile.
 

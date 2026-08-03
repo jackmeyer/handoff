@@ -2,8 +2,9 @@
   <Profile>
     Handoff — self-hosted share links for big files.
 
-    Point it at a folder on your array (or drag a file into the browser), set an expiry, and get a link
-    you can text to someone. When the link expires the archive is deleted; your originals are never touched.
+    Mount a folder on your array and browse it. Click a file to share it as-is, or share a whole folder
+    and Handoff zips it with no compression. Set an expiry and the link stops working on its own.
+    Your mounted folder is only ever read from.
 
     Built for the "just send me the photos" problem, without standing up a full cloud-storage stack.
   </Profile>
