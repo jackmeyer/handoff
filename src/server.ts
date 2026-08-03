@@ -2,6 +2,7 @@ import express, { type Request, type RequestHandler } from 'express';
 import { DatabaseSync } from 'node:sqlite';
 import { createHash, createHmac, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { spawn, type ChildProcess } from 'node:child_process';
+import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -14,6 +15,8 @@ export type Config = {
   libraryDir: string;
   adminPassword: string;
   publicUrl?: string;
+  /** Seeds the server-wide speed limit on first boot only; the UI owns it after that. */
+  maxMbps?: number;
 };
 
 export type Link = {
@@ -29,6 +32,8 @@ export type Link = {
   downloads: number;
   created: number;
 };
+
+const MBPS = 125_000; // bytes/sec in one megabit/sec
 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
@@ -80,6 +85,7 @@ export function createApp(cfg: Config) {
     downloads INTEGER NOT NULL DEFAULT 0,
     created INTEGER NOT NULL
   )`);
+  db.exec('CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
 
   const q = {
     get: db.prepare('SELECT * FROM links WHERE token = ?'),
@@ -93,6 +99,10 @@ export function createApp(cfg: Config) {
     del: db.prepare('DELETE FROM links WHERE token = ?'),
     dead: db.prepare(
       'SELECT * FROM links WHERE expires <= ? OR (maxDownloads IS NOT NULL AND downloads >= maxDownloads)',
+    ),
+    getSetting: db.prepare('SELECT value FROM settings WHERE key = ?'),
+    setSetting: db.prepare(
+      'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
     ),
   };
   const get = (token: string) => q.get.get(token) as Link | undefined;
@@ -139,6 +149,52 @@ export function createApp(cfg: Config) {
 
   /** In-flight zip jobs, so deleting a link actually cancels the work. */
   const zipping = new Map<string, ChildProcess>();
+
+  // ---- speed limiting ------------------------------------------------------
+  // One token bucket for the whole deployment, shared by every active download.
+  // Sharing is the point: a 500 Mbps cap has to mean 500 total across everyone,
+  // not 500 per downloader, or it doesn't protect the uplink at all.
+  type Bucket = { rate: number; tokens: number; last: number };
+  const newBucket = (rate: number): Bucket => ({ rate, tokens: 0, last: Date.now() });
+
+  // Reassigned when the admin changes the limit. The throttle reads it per chunk,
+  // so a change takes effect on downloads that are already running.
+  let globalBucket: Bucket | null = null;
+
+  const readMax = (): number | null => {
+    const row = q.getSetting.get('maxMbps') as { value: string } | undefined;
+    const n = Number(row?.value);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  };
+
+  const applyMax = (mbps: number | null) => {
+    q.setSetting.run('maxMbps', mbps === null ? '' : String(mbps));
+    globalBucket = mbps === null ? null : newBucket(mbps * MBPS);
+  };
+
+  // MAX_MBPS seeds the setting on first boot; after that the UI is the source of truth.
+  applyMax(q.getSetting.get('maxMbps') ? readMax() : (cfg.maxMbps ?? null));
+
+  /** How long `n` bytes must wait. Credit is capped at 100ms so an idle link
+   *  can't bank a burst that blows past the cap the moment someone connects. */
+  const waitFor = (b: Bucket, n: number) => {
+    const now = Date.now();
+    b.tokens = Math.min(b.rate / 10, b.tokens + ((now - b.last) * b.rate) / 1000);
+    b.last = now;
+    b.tokens -= n;
+    return b.tokens >= 0 ? 0 : Math.ceil((-b.tokens * 1000) / b.rate);
+  };
+
+  /** Paces a download against the server-wide cap, read per chunk so a limit
+   *  changed mid-transfer applies to downloads already running. */
+  const throttle = () =>
+    new Transform({
+      transform(chunk: Buffer, _enc, cb) {
+        const wait = globalBucket ? waitFor(globalBucket, chunk.length) : 0;
+        if (wait) setTimeout(cb, wait, null, chunk);
+        else cb(null, chunk);
+      },
+    });
 
   const remove = (l: Link) => {
     zipping.get(l.token)?.kill();
@@ -214,6 +270,20 @@ export function createApp(cfg: Config) {
 
   app.get('/api/config', requireAdmin, (_req, res) => {
     res.json({ library: Boolean(LIB) });
+  });
+
+  app.get('/api/settings', requireAdmin, (_req, res) => {
+    res.json({ maxMbps: readMax() });
+  });
+
+  app.put('/api/settings', requireAdmin, (req, res) => {
+    const raw = req.body?.maxMbps;
+    const mbps = raw === null || raw === undefined || raw === '' ? null : Number(raw);
+    if (mbps !== null && (!Number.isFinite(mbps) || mbps <= 0)) {
+      return res.status(400).json({ error: 'Speed limit must be a positive number of Mbps' });
+    }
+    applyMax(mbps);
+    res.json({ maxMbps: mbps });
   });
 
   app.get('/api/browse', requireAdmin, (req, res) => {
@@ -396,17 +466,60 @@ export function createApp(cfg: Config) {
   });
 
   app.get('/f/:token/:name', (req, res) => {
-    const l = live(req.params.token);
+    const l = live(String(req.params.token));
     if (!l || l.status !== 'ready') return res.status(404).type('text').send('Expired');
     if (l.pw && unsign(cookies(req)[`u_${l.token}`]) !== l.token) return res.redirect(303, `/d/${l.token}`);
 
-    // Count a fresh start only, so a resumed or ranged request doesn't burn the quota.
-    const range = req.headers.range;
-    if (!range || /^bytes=0-/.test(range)) q.count.run(l.token);
+    let stat: fs.Stats;
+    try {
+      stat = fs.statSync(l.filePath);
+    } catch {
+      return res.status(404).type('text').send('Gone');
+    }
 
-    res.download(l.filePath, l.name, (err) => {
-      if (err && !res.headersSent) res.status(404).type('text').send('Gone');
+    // Range is handled here rather than by res.download, because a speed limit
+    // needs a transform between the file and the socket and res.download owns
+    // that pipe. Single ranges only — that's all browsers and download managers
+    // send, and it's what res.download did too.
+    let start = 0;
+    let end = stat.size - 1;
+    const m = /^bytes=(\d*)-(\d*)$/.exec((req.headers.range ?? '').trim());
+    if (m) {
+      const unsatisfiable = () => res.status(416).set('content-range', `bytes */${stat.size}`).end();
+      if (m[1] === '') {
+        const last = Number(m[2]);
+        if (!last) return unsatisfiable();
+        start = Math.max(0, stat.size - last);
+      } else {
+        start = Number(m[1]);
+        if (m[2] !== '') end = Math.min(end, Number(m[2]));
+      }
+      if (start > end || start >= stat.size) return unsatisfiable();
+      res.status(206).set('content-range', `bytes ${start}-${end}/${stat.size}`);
+    }
+
+    // Non-ASCII filenames need the RFC 5987 form; the plain one is the fallback.
+    const ascii = l.name.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_');
+    res.set({
+      'accept-ranges': 'bytes',
+      'content-length': String(end - start + 1),
+      'content-type': 'application/octet-stream',
+      'last-modified': stat.mtime.toUTCString(),
+      'content-disposition': `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(l.name)}`,
     });
+
+    // Count fresh starts only, so a resume doesn't burn the download quota.
+    if (start === 0) q.count.run(l.token);
+    if (req.method === 'HEAD') return res.end();
+
+    // Smaller reads when a cap applies: paces ~20 chunks/sec instead of stalling
+    // on a 64KB chunk for half a second at low limits.
+    const rate = globalBucket?.rate;
+    const highWaterMark = rate ? Math.min(262_144, Math.max(16_384, Math.round(rate / 20))) : undefined;
+
+    // The throttle is always in the pipe so a limit set mid-download still applies.
+    const sent = pipeline(fs.createReadStream(l.filePath, { start, end, highWaterMark }), throttle(), res);
+    sent.catch(() => {}); // recipient closed the tab or lost signal; nothing to do
   });
 
   app.use(express.static(path.join(HERE, '..', 'public')));
@@ -425,6 +538,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     libraryDir: process.env.LIBRARY_DIR ?? '/library',
     adminPassword,
     publicUrl: process.env.PUBLIC_URL || undefined,
+    maxMbps: process.env.MAX_MBPS ? Number(process.env.MAX_MBPS) : undefined,
   });
   sweep();
   setInterval(sweep, 60_000).unref?.();

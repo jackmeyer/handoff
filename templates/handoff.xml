@@ -29,6 +29,10 @@
 
     Downloads support HTTP range requests, so a 40GB file survives a dropped connection and resumes instead
     of restarting. Meant to sit behind your existing reverse proxy.
+
+    A settings panel in the web interface caps total download throughput in Mbps, so sharing a large file does
+    not saturate your upload and make the rest of your connection unusable. The cap is shared across every
+    active download rather than applied per connection, and changes take effect immediately.
   </Overview>
 
   <Project>https://github.com/YOUR_GITHUB_USER/handoff</Project>
@@ -63,6 +67,10 @@
 
   <Config Name="Public URL" Target="PUBLIC_URL" Default="" Mode=""
           Description="Optional. The outside address of this app, for example https://share.example.com. Set it so the links you copy are the ones your recipients can actually open."
+          Type="Variable" Display="always" Required="false" Mask="false"/>
+
+  <Config Name="Speed limit" Target="MAX_MBPS" Default="" Mode=""
+          Description="Optional. Seeds the server-wide download speed limit in Mbps on first boot — for example 500 on a 1 gigabit uplink. After first boot the Settings panel in the web interface controls it and this value is ignored."
           Type="Variable" Display="always" Required="false" Mask="false"/>
 
   <Config Name="PUID" Target="PUID" Default="99" Mode=""

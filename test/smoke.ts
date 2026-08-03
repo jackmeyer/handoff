@@ -1,7 +1,7 @@
 /**
  * One runnable check. Covers the paths that would hurt: auth, path traversal,
- * range/resume, per-link passwords, download limits, and — most importantly —
- * that expiry never deletes a file from the library share.
+ * range/resume, per-link passwords, download limits, the server-wide speed cap,
+ * and — most importantly — that expiry never deletes a file from the library share.
  *
  *   node test/smoke.ts
  */
@@ -19,6 +19,9 @@ const dataDir = path.join(tmp, 'data');
 const libraryDir = path.join(tmp, 'library');
 fs.mkdirSync(dataDir);
 fs.mkdirSync(path.join(libraryDir, 'photos'), { recursive: true });
+
+// 1 MiB, big enough to time a speed limit against.
+fs.writeFileSync(path.join(libraryDir, 'rate.bin'), Buffer.alloc(1 << 20, 9));
 
 const original = path.join(libraryDir, 'notes.txt');
 fs.writeFileSync(original, 'abcdefghij');
@@ -73,7 +76,7 @@ for (const bad of ['../..', '/etc', '../../etc', 'photos/../../..']) {
 const listing = (await (await call('/api/browse?p=')).json()) as { entries: { name: string }[] };
 assert.deepEqual(
   listing.entries.map((e) => e.name),
-  ['big', 'photos', 'notes.txt'],
+  ['big', 'photos', 'notes.txt', 'rate.bin'],
   'directories sort first',
 );
 
@@ -184,6 +187,109 @@ assert.equal((await fetch(`${base}/f/${capped.token}/notes.txt`)).status, 200, '
 assert.equal((await fetch(`${base}/f/${capped.token}/notes.txt`)).status, 404, 'second download refused');
 
 step('download limit');
+
+// --- range edge cases --------------------------------------------------------
+const MiB = 1 << 20;
+const rate = await mkLink({ source: 'library', path: 'rate.bin' });
+
+const tail = await fetch(`${base}/f/${rate.token}/rate.bin`, { headers: { range: 'bytes=1048570-' } });
+assert.equal(tail.status, 206);
+assert.equal(tail.headers.get('content-range'), `bytes 1048570-${MiB - 1}/${MiB}`);
+assert.equal((await tail.arrayBuffer()).byteLength, 6, 'open-ended range');
+
+const suffix = await fetch(`${base}/f/${rate.token}/rate.bin`, { headers: { range: 'bytes=-100' } });
+assert.equal(suffix.status, 206, 'bytes=-N means the last N bytes');
+assert.equal((await suffix.arrayBuffer()).byteLength, 100);
+
+// Unsatisfiable ranges are refused, not quietly served whole.
+const bad = await fetch(`${base}/f/${rate.token}/rate.bin`, { headers: { range: 'bytes=99999999-' } });
+assert.equal(bad.status, 416, 'unsatisfiable range');
+assert.equal(bad.headers.get('content-range'), `bytes */${MiB}`);
+
+// HEAD reports the size without sending a body.
+const head = await fetch(`${base}/f/${rate.token}/rate.bin`, { method: 'HEAD' });
+assert.equal(head.headers.get('content-length'), String(MiB));
+assert.equal(head.headers.get('accept-ranges'), 'bytes');
+
+step('range edge cases');
+
+// --- server-wide speed limit -------------------------------------------------
+// A second deployment, capped globally, to check the limit applies across
+// different links rather than only within one.
+const capDir = fs.mkdtempSync(path.join(os.tmpdir(), 'handoff-cap-'));
+fs.mkdirSync(path.join(capDir, 'data'));
+const capped2 = createApp({
+  dataDir: path.join(capDir, 'data'),
+  libraryDir,
+  adminPassword: PASSWORD,
+  maxMbps: 16, // 2 MB/s for the whole server
+});
+const capServer = capped2.app.listen(0);
+await new Promise((r) => capServer.once('listening', r));
+const capBase = `http://127.0.0.1:${(capServer.address() as { port: number }).port}`;
+
+const capLogin = await fetch(`${capBase}/api/login`, {
+  method: 'POST',
+  headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({ password: PASSWORD }),
+});
+const capSess = (capLogin.headers.getSetCookie()[0] ?? '').split(';')[0];
+const capLink = async () => {
+  const r = await fetch(`${capBase}/api/links`, {
+    method: 'POST',
+    headers: { cookie: capSess, 'content-type': 'application/json' },
+    body: JSON.stringify({ source: 'library', path: 'rate.bin', hours: 1 }),
+  });
+  return ((await r.json()) as { token: string }).token;
+};
+
+assert.equal(
+  ((await (await fetch(`${capBase}/api/settings`, { headers: { cookie: capSess } })).json()) as { maxMbps: number })
+    .maxMbps,
+  16,
+  'MAX_MBPS seeded the stored setting',
+);
+
+// Two *different* links, downloaded together, must still share the one budget.
+const [a, b] = [await capLink(), await capLink()];
+const t0 = performance.now();
+await Promise.all([
+  fetch(`${capBase}/f/${a}/rate.bin`).then((r) => r.arrayBuffer()),
+  fetch(`${capBase}/f/${b}/rate.bin`).then((r) => r.arrayBuffer()),
+]);
+const bothMs = performance.now() - t0;
+assert.ok(bothMs > 700, `global cap not shared across links: ${bothMs.toFixed(0)}ms for 2MiB at 2MB/s`);
+
+// Raising the limit through the settings API takes effect immediately.
+await fetch(`${capBase}/api/settings`, {
+  method: 'PUT',
+  headers: { cookie: capSess, 'content-type': 'application/json' },
+  body: JSON.stringify({ maxMbps: null }),
+});
+const liftedT0 = performance.now();
+await fetch(`${capBase}/f/${a}/rate.bin`).then((r) => r.arrayBuffer());
+const liftedMs = performance.now() - liftedT0;
+assert.ok(liftedMs < 300, `removing the cap did not take effect: ${liftedMs.toFixed(0)}ms`);
+
+assert.equal(
+  (await (await fetch(`${capBase}/api/settings`, { headers: { cookie: capSess } })).json() as { maxMbps: null })
+    .maxMbps,
+  null,
+  'cleared limit persisted',
+);
+const capBad = await fetch(`${capBase}/api/settings`, {
+  method: 'PUT',
+  headers: { cookie: capSess, 'content-type': 'application/json' },
+  body: JSON.stringify({ maxMbps: -5 }),
+});
+assert.equal(capBad.status, 400, 'negative speed limit refused');
+
+capServer.closeAllConnections();
+capServer.close();
+capped2.db.close();
+fs.rmSync(capDir, { recursive: true, force: true });
+
+step('server-wide speed limit, live-editable');
 
 // --- expiry: owned files deleted, library originals untouched -----------------
 db.prepare('UPDATE links SET expires = ?').run(Date.now() - 1000);
