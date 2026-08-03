@@ -5,57 +5,32 @@ an expiry date.
 
 Built for homelabbers who want to offer download links without setting up an entire Nextcloud instance.
 
-- **Mount a folder** the way you would for any Docker container, then browse it in the admin UI.
-- **Click a file** to share it. It's served straight off the share — no copy, no wasted disk.
-- **Or share a whole folder**, which Handoff zips once with no compression. The link works right away;
-  anyone who opens it early gets a "still being prepared" page that refreshes itself.
-- **Or drag a file into the browser** to upload it into the container.
-- Every link gets an expiry, and optionally a password and a download limit.
-- **Cap your upload bandwidth** server-wide from the settings panel, so a download can't saturate your
-  uplink and make the rest of your connection unusable.
-- When a link expires it's deleted, along with anything Handoff created for it — an uploaded file, or a
-  generated archive. **Files in your mounted folder are only ever read.** Handoff has no code path that
-  writes to it.
-- Downloads support HTTP range requests, so a large archive resumes instead of restarting when a
-  recipient's connection drops.
+- **Browse a mounted folder** in the admin UI and click any file to share it — served straight off the
+  share, no copy and no wasted disk.
+- **Or share a whole folder**, zipped once with no compression. The link works while it's still zipping,
+  and deleting it cancels the job.
+- **Or drag a file in** to upload it. Uploads aren't resumable, so put anything huge on the share instead.
+- Links carry an expiry, and optionally a password and a download limit.
+- **Cap total download bandwidth** so a share can't saturate your uplink.
+- Range requests are supported, so a large download resumes instead of restarting.
+- Expiry deletes the link and anything Handoff created for it. **Your mounted folder is only ever read
+  from** — there is no code path that writes to it.
 
-The recipient gets a plain page with a filename, a size, an expiry date, and one Download button.
+Recipients get a plain page: filename, size, expiry date, one Download button.
 
 ## Install on Unraid
 
-Search **Handoff** in Community Applications, or add this repository under *Apps → Settings →
-Manage Repositories*.
+Search **Handoff** in Community Applications.
 
 | Setting | What to put |
 | --- | --- |
-| **Appdata** (`/data`) | `/mnt/user/appdata/handoff` — see the disk-space note below if you plan to share folders as archives |
-| **Library** (`/library`) | The folder you want to browse and share from, e.g. `/mnt/user/Photos`. Mounted read-only. Optional — leave it out and Handoff is upload-only |
-| **Admin password** | Required, 8+ characters. Gates the upload UI only |
-| **Public URL** | Optional, e.g. `https://share.example.com`. Set it so copied links are the ones your recipients can open |
+| **Appdata** (`/data`) | `/mnt/user/appdata/handoff`. Needs room for the largest folder you plan to zip |
+| **Library** (`/library`) | The folder to share from, e.g. `/mnt/user/Photos`. Read-only. Omit it for upload-only |
+| **Admin password** | Required, 8+ characters. Gates the admin UI only, not share links |
+| **Public URL** | Optional, e.g. `https://share.example.com`, so copied links work outside your LAN |
 | **WebUI port** | `8080` |
 
-Handoff speaks plain HTTP and expects to sit behind your existing reverse proxy (SWAG, NPM, Traefik,
-Cloudflare Tunnel). Two things to check there:
-
-- Raise the proxy's body-size limit if you plan to use browser upload. Nginx defaults to 1 MB;
-  `client_max_body_size 0;` removes the cap.
-- **Turn off proxy buffering.** This is the one that silently hurts. Nginx defaults to buffering both
-  directions through disk temp files, so a 40 GB download gets spooled to your proxy's disk on the way
-  out and a large upload gets written twice on the way in. Both directions want streaming:
-  ```nginx
-  proxy_buffering off;          # downloads stream straight through
-  proxy_request_buffering off;  # uploads too
-  proxy_read_timeout 1h;
-  ```
-- Cloudflare's proxied (orange-cloud) traffic is a poor fit for tens of gigabytes. Use a tunnel with
-  proxying off, or point DNS straight at your origin.
-
-**Disk space.** Generated archives and browser uploads are written to `/data`, so zipping a folder needs
-as much free space there as the folder itself. Map Appdata somewhere with room if you plan to share large
-folders. Individual files don't have this problem — a file shared from the mounted folder is streamed in
-place and copies nothing.
-
-## Or with Docker
+Or with Docker:
 
 ```bash
 docker run -d --name handoff -p 8080:8080 \
@@ -66,39 +41,26 @@ docker run -d --name handoff -p 8080:8080 \
   ghcr.io/jackmeyer/handoff:latest
 ```
 
-## Sharing a folder
+## Behind a reverse proxy
 
-1. Sign in, open **Pick from server**, and click through to the folder. Clicking a folder opens it.
-2. Once you're inside it, click **Share … as a zip** at the top right.
-3. Pick an expiry, and a password if you want one.
-4. **Create link** — it's copied to your clipboard. Send it.
+Handoff speaks plain HTTP and expects a proxy in front (SWAG, NPM, Traefik, Cloudflare Tunnel). For
+nginx, the defaults will spool large transfers through your proxy's disk:
 
-Zipping starts immediately and the row shows the archive growing. You can send the link before it
-finishes. Deleting a link that's still zipping cancels the job and cleans up the partial archive.
+```nginx
+client_max_body_size 0;       # browser uploads
+proxy_buffering off;          # stream downloads instead of buffering them
+proxy_request_buffering off;
+proxy_read_timeout 1h;
+```
 
-Archives are created with `zip -r -0` — stored, not compressed. Photos, video, and audio are already
-compressed, so deflate buys nothing and costs hours on tens of gigabytes. The archive holds a single
-top-level folder, so recipients get one folder rather than thousands of loose files in their downloads.
-
-When the link expires the archive deletes itself. The original folder is untouched.
-
-Uploads through the browser aren't resumable — if the connection drops mid-upload you start over. For
-anything genuinely large, put it on the share and use **Pick from server** instead.
+Cloudflare's proxied (orange-cloud) traffic is a poor fit for tens of gigabytes. Use a tunnel with
+proxying off, or point DNS straight at your origin.
 
 ## Speed limits
 
-Open **Settings** in the web UI to cap total download throughput in Mbps. On a 1 Gbps uplink, setting
-500 leaves you half your upload for everything else.
-
-The cap is a **total across every active download**, not per connection — three people pulling three
-different links share the 500, they don't get 500 each. That's the only version that actually protects
-your uplink.
-
-Changes apply immediately, including to downloads already in flight. Measured accuracy is within half a
-percent: an 800 Mbps cap delivered 100,050,631 B/s against a 100,000,000 B/s target.
-
-`MAX_MBPS` seeds the value on first boot, so a fresh Unraid install can arrive pre-capped, but the
-settings panel is the source of truth afterwards.
+**Settings** in the web UI caps total download throughput in Mbps — a total across every active
+download, not per connection. Changes apply to transfers already in progress. `MAX_MBPS` seeds the
+value on first boot; the settings panel owns it afterwards.
 
 ## Configuration
 
@@ -108,87 +70,42 @@ settings panel is the source of truth afterwards.
 | `PORT` | `8080` | HTTP port |
 | `DATA_DIR` | `/data` | Database, browser uploads, generated archives |
 | `LIBRARY_DIR` | `/library` | Read-only folder to browse. Absent → the browse tab is hidden |
-| `PUBLIC_URL` | — | Base URL used when generating links. Falls back to the request's host |
-| `MAX_MBPS` | — | Seeds the server-wide speed limit on first boot only. After that the settings panel owns it |
+| `PUBLIC_URL` | — | Base URL for generated links. Falls back to the request's host |
+| `MAX_MBPS` | — | Seeds the speed limit on first boot only |
 | `PUID` / `PGID` / `UMASK` | `99` / `100` / `022` | Standard Unraid ownership |
-
-## How it works
-
-One Node process, one SQLite file, no build step. Under 1,000 lines of application code.
-
-- Links are 96-bit random tokens. Guessing one is not a realistic attack.
-- Both the admin password and per-link passwords are scrypt-derived and compared in constant time.
-- Library paths are resolved through `realpath` and checked against the library root, so `../` and
-  symlinks can't escape.
-- **Deletion is derived from the link token, not from the stored file path.** Only uploads and
-  generated archives live under `/data/files/<token>/`, and that's the only thing expiry deletes. A link
-  to a file in your mounted folder has nothing to delete, so expiry physically cannot reach it. There's
-  a test for exactly this.
-- Folder archives use store-only zip (`-0`), and an in-flight zip is killed if you delete its link.
-- The speed limit is one token bucket shared by every active download, applied by a transform between
-  the file and the socket. With no limit set the transform is a no-op — measured throughput is unchanged.
-- Range requests are handled directly rather than by `res.download`, because the throttle needs to sit
-  in that pipe. Single ranges only, which is all browsers and download managers send.
-- A sweeper runs every 60 seconds and on boot.
 
 ## Security
 
-The whole perimeter is one password, so it's worth being explicit about what protects what.
+The admin password protects `/api/*` and the web UI. Share links are public by design, protected by a
+96-bit random token plus an optional per-link password.
 
-**Two separate surfaces.** `/api/*` and the web UI require the admin password. The download side
-(`/d/<token>` and `/f/<token>/…`) is deliberately public — that's the point of a share link — and is
-protected by a 96-bit random token, plus an optional per-link password.
+Login is scrypt-derived with a rising delay after repeated failures and no lockout, so a brute force
+slows to a crawl but can't lock you out. Sessions are bound to the password, so rotating
+`ADMIN_PASSWORD` ends any that were already open. Cookies are `HttpOnly` and `SameSite=Lax`, plus
+`Secure` behind TLS. CSP, `X-Frame-Options`, `nosniff`, and `Referrer-Policy: no-referrer` are set on
+every response.
 
-**Login is deliberately slow.** The admin password is verified with scrypt, so each attempt costs
-~100ms of CPU rather than a microsecond of string comparison. Consecutive failures add a rising delay
-on top. There is no lockout: an attacker can slow themselves down but can never lock you out of your
-own server. Verification runs off the event loop so a login flood can't stall downloads.
+Known limits:
 
-**Sessions are bound to the password.** Changing `ADMIN_PASSWORD` and restarting invalidates every
-session that was already open — if you think it leaked, rotating it actually ends access.
-
-**Headers.** `Content-Security-Policy` with `script-src 'self'` (the UI's JavaScript lives in
-`public/app.js`, nothing inline), `frame-ancestors 'none'` and `X-Frame-Options: DENY` against
-clickjacking, `nosniff`, and `Referrer-Policy: no-referrer` so a share token can't leak through a
-Referer header.
-
-**Cookies** are `HttpOnly`, `SameSite=Lax`, and `Secure` whenever a proxy terminates TLS. `SameSite=Lax`
-is also what makes CSRF tokens unnecessary: cross-site POST/PUT/DELETE never carry the session cookie,
-and no state-changing operation is a GET.
-
-**No injection surface.** Filenames reach the admin UI only through `textContent` and the download page
-only through an HTML escaper. Library paths are resolved with `realpath` and checked against the root,
-so neither `../` nor a symlink escapes. Every SQL statement is prepared with bound parameters.
-
-Known limits, so you can decide if they matter to you:
-
-- Downloads aren't rate-limited by IP or connection count. The server-wide speed cap bounds bandwidth,
-  but a determined party with a valid link can open many connections. Your reverse proxy is the right
-  place to limit that.
-- There's no audit log of who downloaded what, and no second factor.
-- `ADMIN_PASSWORD` arrives as an environment variable, so it's visible to anyone who can run
-  `docker inspect` on your server. That's the normal Unraid pattern, but it is not a secret store.
-- Use a long password. Slow hashing raises the cost of guessing; it doesn't rescue `password1`.
+- No per-IP or per-connection download rate limiting — your reverse proxy is the place for that.
+- No audit log and no second factor.
+- `ADMIN_PASSWORD` is an environment variable, so it's visible to anyone who can run `docker inspect`.
+- Slow hashing raises the cost of guessing; it doesn't rescue a weak password.
 
 Found something? Open an issue.
 
 ## Development
 
+One Node process, one SQLite file, no build step. Node 24+ runs the TypeScript directly.
+
 ```bash
 npm install
 ADMIN_PASSWORD=devpassword DATA_DIR=./data LIBRARY_DIR=/path/to/some/files npm start
-```
-
-```bash
 npm test && npm run typecheck
 ```
 
-`npm test` is a single file that starts the real server and exercises auth, path traversal, range
-requests and their edge cases, uploads, per-link passwords, download limits, zipping and mid-zip
-cancellation, the speed cap (including that its budget is shared across connections rather than applied
-per-connection), and the expiry rules.
-
-Node 24+ runs the TypeScript directly — there is nothing to compile.
+`npm test` starts a real server and covers auth, path traversal, range requests, uploads, passwords,
+download limits, zipping, speed limits, and the expiry rules.
 
 ## License
 
