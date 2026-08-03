@@ -12,12 +12,12 @@ Built for homelabbers who want to offer download links without setting up an ent
 - **Or drag a file into the browser** to upload it into the container.
 - Every link gets an expiry, and optionally a password and a download limit.
 - **Cap your upload bandwidth** server-wide from the settings panel, so a download can't saturate your
-  uplink and make the rest of your house unusable.
+  uplink and make the rest of your connection unusable.
 - When a link expires it's deleted, along with anything Handoff created for it — an uploaded file, or a
   generated archive. **Files in your mounted folder are only ever read.** Handoff has no code path that
   writes to it.
-- Downloads support HTTP range requests, so a 40 GB archive resumes instead of restarting when your
-  dad's connection drops.
+- Downloads support HTTP range requests, so a large archive resumes instead of restarting when a
+  recipient's connection drops.
 
 The recipient gets a plain page with a filename, a size, an expiry date, and one Download button.
 
@@ -28,7 +28,7 @@ Manage Repositories*.
 
 | Setting | What to put |
 | --- | --- |
-| **Appdata** (`/data`) | `/mnt/user/appdata/handoff` — see the disk-space note below if you plan to share folders |
+| **Appdata** (`/data`) | `/mnt/user/appdata/handoff` — see the disk-space note below if you plan to share folders as archives |
 | **Library** (`/library`) | The folder you want to browse and share from, e.g. `/mnt/user/Photos`. Mounted read-only. Optional — leave it out and Handoff is upload-only |
 | **Admin password** | Required, 8+ characters. Gates the upload UI only |
 | **Public URL** | Optional, e.g. `https://share.example.com`. Set it so copied links are the ones your recipients can open |
@@ -50,11 +50,10 @@ Cloudflare Tunnel). Two things to check there:
 - Cloudflare's proxied (orange-cloud) traffic is a poor fit for tens of gigabytes. Use a tunnel with
   proxying off, or point DNS straight at your origin.
 
-**Disk space.** Generated archives and browser uploads live in `/data`. Zipping a 40 GB folder needs
-40 GB free there, and on a default Unraid setup `/mnt/user/appdata` sits on your cache SSD — which is
-usually the smallest disk you own. If you plan to share large folders, point the Appdata mapping at an
-array share with room (`/mnt/user/handoff`) instead. Single files and uploads don't have this problem:
-a file shared from the mounted folder is streamed in place and copies nothing.
+**Disk space.** Generated archives and browser uploads are written to `/data`, so zipping a folder needs
+as much free space there as the folder itself. Map Appdata somewhere with room if you plan to share large
+folders. Individual files don't have this problem — a file shared from the mounted folder is streamed in
+place and copies nothing.
 
 ## Or with Docker
 
@@ -67,21 +66,21 @@ docker run -d --name handoff -p 8080:8080 \
   ghcr.io/jackmeyer/handoff:latest
 ```
 
-## Sending a folder of wedding photos
+## Sharing a folder
 
 1. Sign in, open **Pick from server**, and click through to the folder. Clicking a folder opens it.
-2. Once you're inside it, click **Share "Wedding Photos" as a zip** at the top right.
-3. Expiry `7 days`, password if you want one.
+2. Once you're inside it, click **Share … as a zip** at the top right.
+3. Pick an expiry, and a password if you want one.
 4. **Create link** — it's copied to your clipboard. Send it.
 
 Zipping starts immediately and the row shows the archive growing. You can send the link before it
 finishes. Deleting a link that's still zipping cancels the job and cleans up the partial archive.
 
-Archives are created with `zip -r -0` — stored, not compressed. Photos and video are already
-compressed, so deflate buys nothing and costs hours on tens of gigabytes. The archive contains a single
-top-level folder, so your dad doesn't get 3,000 loose files in his Downloads.
+Archives are created with `zip -r -0` — stored, not compressed. Photos, video, and audio are already
+compressed, so deflate buys nothing and costs hours on tens of gigabytes. The archive holds a single
+top-level folder, so recipients get one folder rather than thousands of loose files in their downloads.
 
-A week later the archive deletes itself. Your original folder is untouched.
+When the link expires the archive deletes itself. The original folder is untouched.
 
 Uploads through the browser aren't resumable — if the connection drops mid-upload you start over. For
 anything genuinely large, put it on the share and use **Pick from server** instead.
@@ -115,10 +114,10 @@ settings panel is the source of truth afterwards.
 
 ## How it works
 
-One Node process, one SQLite file, no build step. About 400 lines.
+One Node process, one SQLite file, no build step. Under 1,000 lines of application code.
 
 - Links are 96-bit random tokens. Guessing one is not a realistic attack.
-- Per-link passwords are scrypt-hashed. The admin password is compared in constant time.
+- Both the admin password and per-link passwords are scrypt-derived and compared in constant time.
 - Library paths are resolved through `realpath` and checked against the library root, so `../` and
   symlinks can't escape.
 - **Deletion is derived from the link token, not from the stored file path.** Only uploads and
@@ -177,7 +176,7 @@ Found something? Open an issue.
 
 ```bash
 npm install
-ADMIN_PASSWORD=devpassword DATA_DIR=./data LIBRARY_DIR=/Users/you/Pictures npm start
+ADMIN_PASSWORD=devpassword DATA_DIR=./data LIBRARY_DIR=/path/to/some/files npm start
 ```
 
 ```bash
@@ -190,19 +189,6 @@ cancellation, the speed cap (including that its budget is shared across connecti
 per-connection), and the expiry rules.
 
 Node 24+ runs the TypeScript directly — there is nothing to compile.
-
-## Publishing to Community Applications
-
-1. Replace `YOUR_GITHUB_USER` throughout:
-   ```bash
-   grep -rl YOUR_GITHUB_USER . --exclude-dir=node_modules | xargs sed -i '' 's/YOUR_GITHUB_USER/yourname/g'
-   ```
-2. Push to a **public** GitHub repo named `handoff`. The included workflow builds and pushes
-   `ghcr.io/<you>/handoff:latest` on every push to `main` — make the resulting package public in the
-   repo's Packages settings.
-3. Submit the repo at <https://ca.unraid.net/submit>, then run **Validate** and **Scan**.
-
-`ca_profile.xml` and `templates/handoff.xml` are already in the layout CA expects.
 
 ## License
 

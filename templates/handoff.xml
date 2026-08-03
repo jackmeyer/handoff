@@ -1,13 +1,13 @@
 <?xml version="1.0"?>
 <Container version="2">
   <Name>handoff</Name>
-  <Repository>ghcr.io/YOUR_GITHUB_USER/handoff:latest</Repository>
-  <Registry>https://ghcr.io/YOUR_GITHUB_USER/handoff</Registry>
+  <Repository>ghcr.io/jackmeyer/handoff:latest</Repository>
+  <Registry>https://ghcr.io/jackmeyer/handoff</Registry>
   <Network>bridge</Network>
   <Shell>sh</Shell>
   <Privileged>false</Privileged>
 
-  <Icon>https://raw.githubusercontent.com/YOUR_GITHUB_USER/handoff/main/icon.svg</Icon>
+  <Icon>https://raw.githubusercontent.com/jackmeyer/handoff/main/icon.svg</Icon>
   <WebUI>http://[IP]:[PORT:8080]</WebUI>
 
   <Overview>
@@ -23,9 +23,8 @@
     archive. Your mounted folder is read-only to Handoff — it is only ever read from, never written to or
     deleted from.
 
-    Note on disk space: generated archives are written to the Appdata path, so zipping a 40GB folder needs 40GB
-    free there. On a default Unraid setup that is your cache SSD. Point Appdata at an array share if you plan
-    to share large folders.
+    Note on disk space: generated archives are written to the Appdata path, so zipping a folder needs as much
+    free space there as the folder itself. Map Appdata somewhere with room if you plan to share large folders.
 
     Downloads support HTTP range requests, so a 40GB file survives a dropped connection and resumes instead
     of restarting. Meant to sit behind your existing reverse proxy.
@@ -35,10 +34,10 @@
     active download rather than applied per connection, and changes take effect immediately.
   </Overview>
 
-  <Project>https://github.com/YOUR_GITHUB_USER/handoff</Project>
-  <Support>https://github.com/YOUR_GITHUB_USER/handoff/issues</Support>
-  <TemplateURL>https://raw.githubusercontent.com/YOUR_GITHUB_USER/handoff/main/templates/handoff.xml</TemplateURL>
-  <ReadMe>https://raw.githubusercontent.com/YOUR_GITHUB_USER/handoff/main/README.md</ReadMe>
+  <Project>https://github.com/jackmeyer/handoff</Project>
+  <Support>https://github.com/jackmeyer/handoff/issues</Support>
+  <TemplateURL>https://raw.githubusercontent.com/jackmeyer/handoff/main/templates/handoff.xml</TemplateURL>
+  <ReadMe>https://raw.githubusercontent.com/jackmeyer/handoff/main/README.md</ReadMe>
 
   <Category>Tools:Utilities Network:Web</Category>
   <ExtraSearchTerms>share link file transfer download expiring url shortener send wetransfer</ExtraSearchTerms>
@@ -54,7 +53,7 @@
           Type="Port" Display="always" Required="true" Mask="false">8080</Config>
 
   <Config Name="Appdata" Target="/data" Default="/mnt/user/appdata/handoff" Mode="rw"
-          Description="Database, browser uploads, and generated zip archives live here. Needs room for the largest folder you plan to share — consider an array share rather than the cache SSD."
+          Description="Database, browser uploads, and generated zip archives live here. Needs room for the largest folder you plan to share as an archive."
           Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/handoff</Config>
 
   <Config Name="Library" Target="/library" Default="/mnt/user" Mode="ro"
