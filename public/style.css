@@ -275,6 +275,29 @@ ul { list-style: none; margin: 0; padding: 0; }
 .auth .fname { text-align: center; }
 .auth .btn { margin-top: 0.8rem; }
 
+/* ---- toast --------------------------------------------------------------- */
+/* A [popover], so the browser puts it in the top layer — no z-index to lose track
+   of. The ID beats the UA sheet's `inset: 0; margin: auto` centring. */
+
+#toast {
+  position: fixed;
+  inset: auto 0 2rem;
+  margin: 0 auto;
+  width: max-content;
+  max-width: calc(100% - 2rem);
+  padding: 0.6rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 0.86rem;
+  box-shadow: 0 0.4rem 1.5rem rgb(0 0 0 / 0.18);
+}
+#toast:popover-open { animation: rise 0.18s ease-out; }
+@keyframes rise {
+  from { opacity: 0; transform: translateY(0.4rem); }
+}
+
 /* The zip-in-progress page has no button to press; the bar carries the waiting. */
 .bar {
   height: 0.35rem;
@@ -298,6 +321,7 @@ ul { list-style: none; margin: 0; padding: 0; }
 }
 @media (prefers-reduced-motion: reduce) {
   .bar::after { animation: none; width: 100%; opacity: 0.5; }
+  #toast:popover-open { animation: none; }
 }
 
 /* Last, and specific enough to beat #status / .hint, which both set a colour. */

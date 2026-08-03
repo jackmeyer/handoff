@@ -24,6 +24,18 @@ const copy = async (text) => {
   }
 };
 
+// togglePopover(force) rather than showPopover(), which throws if it's already open —
+// and optional-call so an old browser degrades to the #status line instead of
+// breaking the rest of the handler.
+let toastTimer;
+const toast = (msg) => {
+  const t = $('toast');
+  t.textContent = msg;
+  t.togglePopover?.(true);
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.togglePopover?.(false), 3000);
+};
+
 let pick = null; // { source, path?, file?, label }
 
 function setPick(p) {
@@ -127,7 +139,9 @@ $('create').onclick = async () => {
     }
   }
 
-  $('status').textContent = `${(await copy(data.url)) ? 'Link copied' : 'Link ready'}: ${data.url}`;
+  const copied = await copy(data.url);
+  $('status').textContent = `${copied ? 'Link copied' : 'Link ready'}: ${data.url}`;
+  toast(copied ? 'Link copied to clipboard' : 'Link ready — copy it from below');
   $('pass').value = $('max').value = '';
   setPick(null);
   refresh();

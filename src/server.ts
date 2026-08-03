@@ -555,7 +555,7 @@ export function createApp(cfg: Config) {
         l.name,
         `${head(l, 'Shared with you')}${meta}
          <a class="btn primary" href="/f/${l.token}/${encodeURIComponent(l.name)}" download>Download</a>
-         <p class=note>Access ends ${esc(on(l.expires, true))}. Save the file somewhere safe once it finishes.</p>`,
+         <p class=note>Access ends ${esc(on(l.expires, true))}.</p>`,
       ),
     );
   });
