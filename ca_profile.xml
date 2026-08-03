@@ -1,0 +1,12 @@
+<CommunityApplications>
+  <Profile>
+    Handoff — self-hosted share links for big files.
+
+    Point it at a folder on your array (or drag a file into the browser), set an expiry, and get a link
+    you can text to someone. When the link expires the archive is deleted; your originals are never touched.
+
+    Built for the "just send me the photos" problem, without standing up a full cloud-storage stack.
+  </Profile>
+  <Icon>https://raw.githubusercontent.com/YOUR_GITHUB_USER/handoff/main/icon.svg</Icon>
+  <WebPage>https://github.com/YOUR_GITHUB_USER/handoff</WebPage>
+</CommunityApplications>

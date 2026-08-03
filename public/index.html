@@ -1,0 +1,301 @@
+<!doctype html>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Handoff</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --line: #8886;
+    --dim: color-mix(in srgb, currentColor 60%, transparent);
+    --accent: #2563eb;
+  }
+  * { box-sizing: border-box; }
+  body { font: 15px/1.55 system-ui, sans-serif; margin: 0 auto; max-width: 52rem; padding: 2rem 1rem 4rem; }
+  h1 { font-size: 1.5rem; margin: 0 0 1.5rem; }
+  h2 { font-size: .8rem; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); margin: 2rem 0 .75rem; }
+  button { font: inherit; padding: .5rem 1rem; border: 1px solid var(--line); border-radius: .5rem;
+           background: transparent; color: inherit; cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  button:disabled { opacity: .5; cursor: default; }
+  input, select { font: inherit; padding: .5rem; border: 1px solid var(--line); border-radius: .5rem;
+                  background: transparent; color: inherit; width: 100%; }
+  label { display: block; font-size: .8rem; color: var(--dim); margin-bottom: .25rem; }
+  .row { display: flex; gap: .75rem; flex-wrap: wrap; align-items: end; }
+  .row > div { flex: 1 1 9rem; }
+  .tabs { display: flex; gap: .5rem; border-bottom: 1px solid var(--line); margin-bottom: 1.25rem; }
+  .tabs button { border: 0; border-bottom: 2px solid transparent; border-radius: 0; padding: .5rem .25rem; margin-right: 1rem; }
+  .tabs button[aria-selected='true'] { border-bottom-color: var(--accent); font-weight: 600; }
+  #drop { border: 2px dashed var(--line); border-radius: .75rem; padding: 2.5rem 1rem; text-align: center;
+          cursor: pointer; color: var(--dim); }
+  #drop.over { border-color: var(--accent); color: inherit; }
+  ul { list-style: none; margin: 0; padding: 0; }
+  #files li { display: flex; gap: .75rem; align-items: center; padding: .45rem .5rem; border-radius: .4rem; cursor: pointer; }
+  #files li:hover { background: color-mix(in srgb, currentColor 8%, transparent); }
+  #files li[aria-selected='true'] { background: color-mix(in srgb, var(--accent) 20%, transparent); }
+  #files .size, .meta { color: var(--dim); font-size: .85rem; margin-left: auto; white-space: nowrap; }
+  table { width: 100%; border-collapse: collapse; }
+  td, th { text-align: left; padding: .5rem .4rem; border-bottom: 1px solid var(--line); font-size: .9rem; vertical-align: top; }
+  th { font-size: .75rem; text-transform: uppercase; letter-spacing: .05em; color: var(--dim); font-weight: 500; }
+  code { font-size: .85rem; overflow-wrap: anywhere; }
+  progress { width: 100%; height: .5rem; }
+  .err { color: #dc2626; }
+  .hide { display: none !important; }
+  #crumbs { font-size: .85rem; color: var(--dim); margin-bottom: .5rem; overflow-wrap: anywhere; }
+</style>
+
+<h1>Handoff</h1>
+
+<form id="login" class="hide">
+  <div class="row">
+    <div><label for="pw">Admin password</label><input id="pw" type="password" autofocus /></div>
+    <button class="primary">Sign in</button>
+  </div>
+  <p id="loginerr" class="err"></p>
+</form>
+
+<main id="main" class="hide">
+  <div class="tabs">
+    <button id="tabUpload" aria-selected="true">Upload a file</button>
+    <button id="tabLibrary" aria-selected="false">Pick from server</button>
+  </div>
+
+  <section id="paneUpload">
+    <div id="drop">Drop a file here, or click to choose</div>
+    <input id="file" type="file" class="hide" />
+  </section>
+
+  <section id="paneLibrary" class="hide">
+    <div id="crumbs"></div>
+    <ul id="files"></ul>
+  </section>
+
+  <h2>Link options</h2>
+  <div class="row">
+    <div>
+      <label for="hours">Expires after</label>
+      <select id="hours">
+        <option value="24">24 hours</option>
+        <option value="168" selected>7 days</option>
+        <option value="720">30 days</option>
+        <option value="2160">90 days</option>
+      </select>
+    </div>
+    <div><label for="pass">Password (optional)</label><input id="pass" type="text" autocomplete="off" /></div>
+    <div><label for="max">Download limit (optional)</label><input id="max" type="number" min="1" /></div>
+    <button id="create" class="primary" disabled>Create link</button>
+  </div>
+  <p id="status" class="meta" style="margin-left:0"></p>
+  <progress id="prog" class="hide" max="100" value="0"></progress>
+
+  <h2>Active links</h2>
+  <table>
+    <thead>
+      <tr><th>File</th><th>Size</th><th>Expires</th><th>Downloads</th><th></th></tr>
+    </thead>
+    <tbody id="links"></tbody>
+  </table>
+</main>
+
+<script type="module">
+  const $ = (id) => document.getElementById(id);
+  const api = (url, opts) => fetch(url, { ...opts, headers: { 'content-type': 'application/json', ...opts?.headers } });
+
+  const fmt = (n) => {
+    const u = ['B', 'KB', 'MB', 'GB', 'TB'];
+    let i = 0;
+    while (n >= 1024 && i < u.length - 1) (n /= 1024), i++;
+    return `${n < 10 && i > 0 ? n.toFixed(1) : Math.round(n)} ${u[i]}`;
+  };
+  const when = (ms) => new Date(ms).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
+
+  // navigator.clipboard is undefined outside a secure context — plain http on a
+  // LAN IP, which is exactly how people first open this. Fail visibly, not silently.
+  const copy = async (text) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  let pick = null; // { source, path?, file?, label }
+
+  function setPick(p) {
+    pick = p;
+    $('create').disabled = !p;
+    $('status').textContent = p ? `Selected: ${p.label}` : '';
+    $('status').classList.remove('err');
+  }
+
+  // ---- upload tab ----------------------------------------------------------
+  $('drop').onclick = () => $('file').click();
+  $('file').onchange = () => $('file').files[0] && setPick({ source: 'upload', file: $('file').files[0], label: $('file').files[0].name });
+  for (const ev of ['dragenter', 'dragover']) $('drop').addEventListener(ev, (e) => (e.preventDefault(), $('drop').classList.add('over')));
+  for (const ev of ['dragleave', 'drop']) $('drop').addEventListener(ev, () => $('drop').classList.remove('over'));
+  $('drop').addEventListener('drop', (e) => {
+    e.preventDefault();
+    const f = e.dataTransfer.files[0];
+    if (f) setPick({ source: 'upload', file: f, label: f.name });
+  });
+
+  // ---- library tab ---------------------------------------------------------
+  async function browse(p = '') {
+    const r = await api(`/api/browse?p=${encodeURIComponent(p)}`);
+    if (!r.ok) return ($('crumbs').textContent = 'Cannot read that folder.');
+    const { path, hasParent, entries } = await r.json();
+    $('crumbs').textContent = `/${path} — click to select, double-click a folder to open it`;
+    $('files').innerHTML = '';
+
+    if (hasParent) {
+      const up = document.createElement('li');
+      up.textContent = '⬆︎ ..';
+      up.onclick = () => browse(path.split('/').slice(0, -1).join('/'));
+      $('files').append(up);
+    }
+    for (const e of entries) {
+      const li = document.createElement('li');
+      const full = path ? `${path}/${e.name}` : e.name;
+      li.innerHTML = `<span>${e.dir ? '📁' : '📄'}</span><span></span><span class="size">${e.dir ? 'folder' : fmt(e.size)}</span>`;
+      li.children[1].textContent = e.name;
+      li.onclick = () => {
+        for (const s of $('files').children) s.removeAttribute('aria-selected');
+        li.setAttribute('aria-selected', 'true');
+        setPick({ source: 'library', path: full, label: e.dir ? `${e.name} (folder → zip)` : e.name });
+      };
+      li.ondblclick = () => e.dir && browse(full);
+      $('files').append(li);
+    }
+  }
+
+  function tab(which) {
+    const lib = which === 'library';
+    $('tabUpload').ariaSelected = String(!lib);
+    $('tabLibrary').ariaSelected = String(lib);
+    $('paneUpload').classList.toggle('hide', lib);
+    $('paneLibrary').classList.toggle('hide', !lib);
+    setPick(null);
+    if (lib) browse('');
+  }
+  $('tabUpload').onclick = () => tab('upload');
+  $('tabLibrary').onclick = () => tab('library');
+
+  // ---- create --------------------------------------------------------------
+  $('create').onclick = async () => {
+    if (!pick) return;
+    $('create').disabled = true;
+    $('status').classList.remove('err');
+    $('status').textContent = 'Creating…';
+
+    const body = {
+      source: pick.source,
+      path: pick.path,
+      name: pick.file?.name,
+      hours: Number($('hours').value),
+      password: $('pass').value || undefined,
+      maxDownloads: $('max').value || undefined,
+    };
+    const r = await api('/api/links', { method: 'POST', body: JSON.stringify(body) });
+    const data = await r.json();
+    if (!r.ok) {
+      $('status').textContent = data.error ?? 'Failed';
+      $('status').classList.add('err');
+      $('create').disabled = false;
+      return;
+    }
+
+    if (pick.source === 'upload') {
+      try {
+        await upload(data.token, pick.file);
+      } catch (err) {
+        $('status').textContent = `Upload failed: ${err.message}`;
+        $('status').classList.add('err');
+        $('create').disabled = false;
+        return;
+      }
+    }
+
+    $('status').textContent = `${(await copy(data.url)) ? 'Link copied' : 'Link ready'}: ${data.url}`;
+    $('pass').value = $('max').value = '';
+    setPick(null);
+    refresh();
+  };
+
+  // XHR, not fetch — fetch gives no upload progress.
+  const upload = (token, file) =>
+    new Promise((resolve, reject) => {
+      const x = new XMLHttpRequest();
+      x.open('PUT', `/api/upload/${token}`);
+      x.setRequestHeader('content-type', 'application/octet-stream');
+      $('prog').classList.remove('hide');
+      x.upload.onprogress = (e) => {
+        if (!e.lengthComputable) return;
+        $('prog').value = (e.loaded / e.total) * 100;
+        $('status').textContent = `Uploading ${fmt(e.loaded)} of ${fmt(e.total)}…`;
+      };
+      const done = (fn, arg) => ($('prog').classList.add('hide'), fn(arg));
+      x.onload = () => (x.status < 300 ? done(resolve) : done(reject, new Error(`HTTP ${x.status}`)));
+      x.onerror = () => done(reject, new Error('connection lost'));
+      x.send(file);
+    });
+
+  // ---- links list ----------------------------------------------------------
+  async function refresh() {
+    const r = await api('/api/links');
+    if (r.status === 401) return show('login');
+    const links = await r.json();
+    $('links').innerHTML = '';
+    for (const l of links) {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td></td><td></td><td></td><td></td>
+        <td style="text-align:right;white-space:nowrap">
+          <button data-copy>Copy</button> <button data-del>Delete</button></td>`;
+      tr.children[0].innerHTML = `<div></div><code></code>`;
+      tr.children[0].firstChild.textContent = `${l.locked ? '🔒 ' : ''}${l.name}`;
+      tr.children[0].lastChild.textContent = l.url;
+      tr.children[1].textContent =
+        l.status === 'zipping' ? `zipping… ${fmt(l.size)}` : l.status === 'ready' ? fmt(l.size) : l.status;
+      tr.children[2].textContent = when(l.expires);
+      tr.children[3].textContent = l.maxDownloads ? `${l.downloads} / ${l.maxDownloads}` : l.downloads;
+      const copyBtn = tr.querySelector('[data-copy]');
+      copyBtn.onclick = async () => {
+        copyBtn.textContent = (await copy(l.url)) ? 'Copied' : 'Select it';
+        setTimeout(() => (copyBtn.textContent = 'Copy'), 1500);
+      };
+      tr.querySelector('[data-del]').onclick = async () => {
+        if (!confirm(`Delete the link for ${l.name}?`)) return;
+        await api(`/api/links/${l.token}`, { method: 'DELETE' });
+        refresh();
+      };
+      $('links').append(tr);
+    }
+    // Keep polling while a zip is building so the size ticks up.
+    if (links.some((l) => l.status === 'zipping')) setTimeout(refresh, 3000);
+  }
+
+  // ---- auth ----------------------------------------------------------------
+  function show(view) {
+    $('login').classList.toggle('hide', view !== 'login');
+    $('main').classList.toggle('hide', view === 'login');
+    if (view === 'login') $('pw').focus();
+  }
+
+  $('login').onsubmit = async (e) => {
+    e.preventDefault();
+    const r = await api('/api/login', { method: 'POST', body: JSON.stringify({ password: $('pw').value }) });
+    if (!r.ok) return ($('loginerr').textContent = 'Wrong password');
+    $('pw').value = $('loginerr').textContent = '';
+    start();
+  };
+
+  async function start() {
+    const r = await api('/api/config');
+    if (r.status === 401) return show('login');
+    const { library } = await r.json();
+    $('tabLibrary').classList.toggle('hide', !library);
+    show('main');
+    refresh();
+  }
+
+  start();
+</script>

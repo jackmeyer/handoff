@@ -1,0 +1,70 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>handoff</Name>
+  <Repository>ghcr.io/YOUR_GITHUB_USER/handoff:latest</Repository>
+  <Registry>https://ghcr.io/YOUR_GITHUB_USER/handoff</Registry>
+  <Network>bridge</Network>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+
+  <Icon>https://raw.githubusercontent.com/YOUR_GITHUB_USER/handoff/main/icon.svg</Icon>
+  <WebUI>http://[IP]:[PORT:8080]</WebUI>
+
+  <Overview>
+    Handoff turns a file or folder on your server into a shareable download link with an expiry date.
+
+    Pick a folder from your array and Handoff zips it once and serves it; pick a single file and it is served
+    in place with no copy. Or drag a file into the browser to upload it. Every link can carry an expiry, an
+    optional password, and an optional download limit. When a link expires the link and any archive Handoff
+    created are deleted automatically — files on your shares are never modified or removed.
+
+    Downloads support HTTP range requests, so a 40GB archive survives a dropped connection and resumes
+    instead of restarting. Meant to sit behind your existing reverse proxy.
+  </Overview>
+
+  <Project>https://github.com/YOUR_GITHUB_USER/handoff</Project>
+  <Support>https://github.com/YOUR_GITHUB_USER/handoff/issues</Support>
+  <TemplateURL>https://raw.githubusercontent.com/YOUR_GITHUB_USER/handoff/main/templates/handoff.xml</TemplateURL>
+  <ReadMe>https://raw.githubusercontent.com/YOUR_GITHUB_USER/handoff/main/README.md</ReadMe>
+
+  <Category>Tools:Utilities Network:Web</Category>
+  <ExtraSearchTerms>share link file transfer download expiring url shortener send wetransfer</ExtraSearchTerms>
+  <Requires>A reverse proxy if you want links to work outside your LAN.</Requires>
+  <Changes>### 1.0.0
+- Initial release.</Changes>
+  <Date>2026-08-02</Date>
+  <MinVer>6.9</MinVer>
+  <License>MIT</License>
+
+  <Config Name="WebUI" Target="8080" Default="8080" Mode="tcp"
+          Description="Port for the Handoff web interface."
+          Type="Port" Display="always" Required="true" Mask="false">8080</Config>
+
+  <Config Name="Appdata" Target="/data" Default="/mnt/user/appdata/handoff" Mode="rw"
+          Description="Database, uploads, and generated zip archives live here. Put it somewhere with room for the largest archive you plan to share."
+          Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/handoff</Config>
+
+  <Config Name="Library" Target="/library" Default="/mnt/user" Mode="ro"
+          Description="The files you want to be able to share, mounted read-only. Point it at a single share (for example /mnt/user/Photos) if you would rather not browse everything."
+          Type="Path" Display="always" Required="false" Mask="false">/mnt/user</Config>
+
+  <Config Name="Admin password" Target="ADMIN_PASSWORD" Default="" Mode=""
+          Description="Password for the upload interface. Minimum 8 characters — the container will not start without it. Download links are separate and do not need this."
+          Type="Variable" Display="always" Required="true" Mask="true"/>
+
+  <Config Name="Public URL" Target="PUBLIC_URL" Default="" Mode=""
+          Description="Optional. The outside address of this app, for example https://share.example.com. Set it so the links you copy are the ones your recipients can actually open."
+          Type="Variable" Display="always" Required="false" Mask="false"/>
+
+  <Config Name="PUID" Target="PUID" Default="99" Mode=""
+          Description="User ID the app runs as."
+          Type="Variable" Display="advanced" Required="false" Mask="false">99</Config>
+
+  <Config Name="PGID" Target="PGID" Default="100" Mode=""
+          Description="Group ID the app runs as."
+          Type="Variable" Display="advanced" Required="false" Mask="false">100</Config>
+
+  <Config Name="UMASK" Target="UMASK" Default="022" Mode=""
+          Description="File creation mask."
+          Type="Variable" Display="advanced" Required="false" Mask="false">022</Config>
+</Container>

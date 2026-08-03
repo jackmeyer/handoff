@@ -1,0 +1,22 @@
+{
+  "name": "handoff",
+  "version": "1.0.0",
+  "description": "Self-hosted share links for big files. Upload or point at a folder, get a link, set an expiry.",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "start": "node src/server.ts",
+    "test": "node test/smoke.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "express": "^5.1.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^24.0.0",
+    "typescript": "^5.7.0"
+  }
+}
