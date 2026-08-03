@@ -2,65 +2,25 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <title>Handoff</title>
-<style>
-  :root {
-    color-scheme: light dark;
-    --line: #8886;
-    --dim: color-mix(in srgb, currentColor 60%, transparent);
-    --accent: #2563eb;
-  }
-  * { box-sizing: border-box; }
-  body { font: 15px/1.55 system-ui, sans-serif; margin: 0 auto; max-width: 52rem; padding: 2rem 1rem 4rem; }
-  h1 { font-size: 1.5rem; margin: 0 0 1.5rem; }
-  h2 { font-size: .8rem; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); margin: 2rem 0 .75rem; }
-  button { font: inherit; padding: .5rem 1rem; border: 1px solid var(--line); border-radius: .5rem;
-           background: transparent; color: inherit; cursor: pointer; }
-  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
-  button:disabled { opacity: .5; cursor: default; }
-  input, select { font: inherit; padding: .5rem; border: 1px solid var(--line); border-radius: .5rem;
-                  background: transparent; color: inherit; width: 100%; }
-  label { display: block; font-size: .8rem; color: var(--dim); margin-bottom: .25rem; }
-  .row { display: flex; gap: .75rem; flex-wrap: wrap; align-items: end; }
-  .row > div { flex: 1 1 9rem; }
-  .tabs { display: flex; gap: .5rem; border-bottom: 1px solid var(--line); margin-bottom: 1.25rem; }
-  .tabs button { border: 0; border-bottom: 2px solid transparent; border-radius: 0; padding: .5rem .25rem; margin-right: 1rem; }
-  .tabs button[aria-selected='true'] { border-bottom-color: var(--accent); font-weight: 600; }
-  #drop { border: 2px dashed var(--line); border-radius: .75rem; padding: 2.5rem 1rem; text-align: center;
-          cursor: pointer; color: var(--dim); }
-  #drop.over { border-color: var(--accent); color: inherit; }
-  ul { list-style: none; margin: 0; padding: 0; }
-  #files li { display: flex; gap: .75rem; align-items: center; padding: .45rem .5rem; border-radius: .4rem; cursor: pointer; }
-  #files li:hover { background: color-mix(in srgb, currentColor 8%, transparent); }
-  #files li[aria-selected='true'] { background: color-mix(in srgb, var(--accent) 20%, transparent); }
-  #files .size, .meta { color: var(--dim); font-size: .85rem; margin-left: auto; white-space: nowrap; }
-  table { width: 100%; border-collapse: collapse; }
-  td, th { text-align: left; padding: .5rem .4rem; border-bottom: 1px solid var(--line); font-size: .9rem; vertical-align: top; }
-  th { font-size: .75rem; text-transform: uppercase; letter-spacing: .05em; color: var(--dim); font-weight: 500; }
-  code { font-size: .85rem; overflow-wrap: anywhere; }
-  progress { width: 100%; height: .5rem; }
-  .err { color: #dc2626; }
-  .hide { display: none !important; }
-  #settings { margin-top: 2.5rem; border-top: 1px solid var(--line); padding-top: 1rem; }
-  #settings summary { cursor: pointer; font-size: .8rem; text-transform: uppercase;
-                      letter-spacing: .06em; color: var(--dim); margin-bottom: 1rem; }
-  #settings .row { max-width: 26rem; }
-  .hint { margin-left: 0; white-space: normal; max-width: 40rem; }
-  #crumbs { display: flex; gap: 1rem; align-items: center; justify-content: space-between;
-            font-size: .85rem; color: var(--dim); margin-bottom: .5rem; overflow-wrap: anywhere; }
-  #shareFolder { flex: none; font-size: .8rem; padding: .3rem .7rem; }
-</style>
+<link rel="stylesheet" href="/style.css" />
+<link rel="stylesheet" href="/theme.css" />
 
-<h1>Handoff</h1>
+<div id="auth" class="center hide">
+  <form id="login" class="card auth">
+    <h1 class="fname">Handoff</h1>
+    <label for="pw">Admin password</label>
+    <input id="pw" type="password" autofocus />
+    <button class="btn primary">Sign in</button>
+    <p id="loginerr" class="err"></p>
+  </form>
+</div>
 
-<form id="login" class="hide">
-  <div class="row">
-    <div><label for="pw">Admin password</label><input id="pw" type="password" autofocus /></div>
-    <button class="primary">Sign in</button>
-  </div>
-  <p id="loginerr" class="err"></p>
-</form>
+<div id="main" class="shell hide">
+  <header class="topbar">
+    <span class="mark">Handoff</span>
+    <span class="topmeta" id="count"></span>
+  </header>
 
-<main id="main" class="hide">
   <div class="tabs">
     <button id="tabUpload" aria-selected="true">Upload a file</button>
     <button id="tabLibrary" aria-selected="false">Pick from server</button>
@@ -74,13 +34,12 @@
   <section id="paneLibrary" class="hide">
     <div id="crumbs">
       <span id="here"></span>
-      <button id="shareFolder" type="button">Share this folder as a zip</button>
+      <button id="shareFolder" class="btn small" type="button">Share this folder as a zip</button>
     </div>
     <ul id="files"></ul>
   </section>
 
-  <h2>Link options</h2>
-  <div class="row">
+  <div class="opts">
     <div>
       <label for="hours">Expires after</label>
       <select id="hours">
@@ -92,35 +51,53 @@
     </div>
     <div><label for="pass">Password (optional)</label><input id="pass" type="text" autocomplete="off" /></div>
     <div><label for="max">Download limit (optional)</label><input id="max" type="number" min="1" /></div>
-    <button id="create" class="primary" disabled>Create link</button>
+    <button id="create" class="btn primary" disabled>Create link</button>
   </div>
-  <p id="status" class="meta" style="margin-left:0"></p>
+  <p id="status"></p>
   <progress id="prog" class="hide" max="100" value="0"></progress>
 
-  <h2>Active links</h2>
-  <table>
-    <thead>
-      <tr><th>File</th><th>Size</th><th>Expires</th><th>Downloads</th><th></th></tr>
-    </thead>
-    <tbody id="links"></tbody>
-  </table>
+  <p class="sect">Active links</p>
+  <ul id="links"></ul>
+  <p id="noLinks" class="empty hide">No active links.</p>
 
   <details id="settings">
     <summary>Settings</summary>
-    <div class="row">
-      <div>
-        <label for="cap">Server-wide speed limit</label>
-        <input id="cap" type="number" min="1" step="any" placeholder="Mbps — blank for unlimited" />
+
+    <div class="setting">
+      <div class="opts">
+        <div>
+          <label for="cap">Server-wide speed limit</label>
+          <input id="cap" type="number" min="1" step="any" placeholder="Mbps — blank for unlimited" />
+        </div>
+        <button id="saveCap" class="btn">Save</button>
       </div>
-      <button id="saveCap">Save</button>
+      <p class="hint">
+        Total download speed across every active link, so a share can't saturate your upload.
+        Shared across everyone downloading, not per person.
+        Changes apply to downloads already in progress.
+      </p>
+      <p id="capStatus" class="hint"></p>
     </div>
-    <p class="meta hint">
-      Total download speed across every active link, so a share can't saturate your upload.
-      Shared across everyone downloading, not per person.
-      Changes apply to downloads already in progress.
-    </p>
-    <p id="capStatus" class="meta"></p>
+
+    <div class="setting">
+      <div class="opts">
+        <div>
+          <label for="theme">Theme</label>
+          <select id="theme">
+            <option value="auto">Match the visitor's device</option>
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+          </select>
+        </div>
+        <button id="saveTheme" class="btn">Save</button>
+      </div>
+      <p class="hint">
+        Applies to this whole deployment, including the download page people see when you
+        send them a link — not just to your browser.
+      </p>
+      <p id="themeStatus" class="hint"></p>
+    </div>
   </details>
-</main>
+</div>
 
 <script type="module" src="app.js"></script>

@@ -307,6 +307,45 @@ fs.rmSync(capDir, { recursive: true, force: true });
 
 step('server-wide speed limit, live-editable');
 
+// --- deployment theme ---------------------------------------------------------
+// /theme.css carries the whole light/dark decision, so the recipient pages need no
+// inline script. Each mode has to emit the right thing, and saving one setting must
+// not clobber the other.
+const themeCss = async () => (await fetch(`${base}/theme.css`)).text();
+const putSetting = (body: unknown) => call('/api/settings', { method: 'PUT', body: JSON.stringify(body) });
+
+assert.match(await themeCss(), /^@media \(prefers-color-scheme: dark\)/, 'default theme follows the visitor');
+
+await putSetting({ theme: 'dark' });
+const forcedDark = await themeCss();
+assert.ok(!forcedDark.includes('@media (prefers-color-scheme'), 'forced dark must not be conditional');
+assert.match(forcedDark, /color-scheme:\s*dark/, 'forced dark still ships the dark variant');
+
+await putSetting({ theme: 'light' });
+assert.equal((await themeCss()).trim(), '', 'light is style.css alone');
+
+assert.equal((await putSetting({ theme: 'neon' })).status, 400, 'unknown theme refused');
+assert.equal(
+  ((await (await call('/api/settings')).json()) as { theme: string }).theme,
+  'light',
+  'refused theme left the stored one alone',
+);
+
+// A recipient is never signed in, so the download pages must still get their theme.
+assert.equal((await fetch(`${base}/theme.css`, { headers: {} })).status, 200, 'theme.css is public');
+
+// The regression this endpoint invites: two settings behind one PUT.
+await putSetting({ maxMbps: 50 });
+await putSetting({ theme: 'auto' });
+assert.equal(
+  ((await (await call('/api/settings')).json()) as { maxMbps: number }).maxMbps,
+  50,
+  'saving the theme cleared the speed limit',
+);
+await putSetting({ maxMbps: null });
+
+step('deployment theme, and settings save independently');
+
 // --- changing the admin password invalidates open sessions --------------------
 {
   const rotDir = fs.mkdtempSync(path.join(os.tmpdir(), 'handoff-rotate-'));

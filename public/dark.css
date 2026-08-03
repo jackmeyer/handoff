@@ -1,0 +1,83 @@
+/* The dark variant — only what differs from style.css.
+
+   Never linked directly. The server serves it through /theme.css, either bare
+   (admin forced dark) or wrapped in a prefers-color-scheme query (admin chose auto).
+   That wrapper is why there are no media queries in here and no :root[data-theme]
+   selectors: the decision is made once, server-side, and this file just states what
+   dark looks like. */
+
+:root {
+  color-scheme: dark;
+
+  --bg: #0a0b0d;
+  --surface: #131519;
+  --line: #232732;
+  --ink: #eceef2;
+  --dim: #858b99;
+  --accent: #4f7cff;
+  --accent-ink: #fff;
+  --accent-soft: #1a2033;
+  --err: #ff6b6b;
+
+  --display: inherit;
+  --radius: 0.45rem;
+  --tracking: -0.005em;
+  --row-pad: 0.6rem 0.75rem;
+}
+
+/* Metadata becomes stat columns instead of an inline sentence. */
+.stats { gap: 0; }
+.stat {
+  display: block;
+  flex: 1;
+  min-width: 4.5rem;
+  padding: 0 0.7rem;
+  text-align: right;
+}
+.stat + .stat::before { content: none; }
+.stat .k {
+  display: block;
+  font-size: 0.6rem;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--dim);
+}
+/* Columns need every header, including the one the inline form leaves implicit. */
+.stat.size .k { display: block; }
+.stat .v { display: block; font-size: 0.8rem; font-weight: 550; margin-top: 0.1rem; white-space: nowrap; }
+
+/* Tabs become a segmented control. */
+.tabs {
+  gap: 0;
+  width: max-content;
+  padding: 0.17rem;
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  background: var(--surface);
+}
+.tabs button {
+  padding: 0.28rem 0.75rem;
+  margin: 0;
+  font-size: 0.82rem;
+  border: 0;
+  border-radius: 0.35rem;
+}
+.tabs button[aria-selected='true'] { background: #262b36; border: 0; }
+
+.url { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+/* The extension chip is decoration the sharp variant does without. */
+#links li .ic,
+.card .ic { display: none; }
+
+.card { background: var(--surface); border-color: var(--line); }
+
+.kicker { font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.09em; }
+
+.card .stats {
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  margin: 0 0 1.1rem;
+}
+.card .stat { text-align: center; padding: 0.55rem 0.3rem; }
+.card .stat + .stat { border-left: 1px solid var(--line); }

@@ -9,6 +9,10 @@ const fmt = (n) => {
 };
 const when = (ms) => new Date(ms).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
 
+// Extension chip, shown only in the light variant. Text beats an emoji table:
+// no lookup to maintain and it renders identically everywhere.
+const ext = (name) => (/\.([a-z0-9]{1,4})$/i.exec(name)?.[1] ?? 'file').toUpperCase();
+
 // navigator.clipboard is undefined outside a secure context — plain http on a
 // LAN IP, which is exactly how people first open this. Fail visibly, not silently.
 const copy = async (text) => {
@@ -153,30 +157,52 @@ async function refresh() {
   if (r.status === 401) return show('login');
   const links = await r.json();
   $('links').innerHTML = '';
+  $('noLinks').classList.toggle('hide', links.length > 0);
+  $('count').textContent = links.length ? `${links.length} active ${links.length === 1 ? 'link' : 'links'}` : '';
+
   for (const l of links) {
-    const tr = document.createElement('tr');
-    tr.innerHTML = `<td></td><td></td><td></td><td></td>
-      <td style="text-align:right;white-space:nowrap">
-        <button data-copy>Copy</button> <button data-del>Delete</button></td>`;
-    tr.children[0].innerHTML = `<div></div><code></code>`;
-    tr.children[0].firstChild.textContent = `${l.locked ? '🔒 ' : ''}${l.name}`;
-    tr.children[0].lastChild.textContent = l.url;
-    tr.children[1].textContent =
+    const li = document.createElement('li');
+    // Structure via innerHTML, user-controlled text via textContent below.
+    li.innerHTML = `<span class="ic"></span>
+      <div class="main"><div class="nm"></div><code class="url"></code></div>
+      <div class="stats">
+        <div class="stat size"><span class="k">Size</span><span class="v"></span></div>
+        <div class="stat"><span class="k">Expires</span><span class="v"></span></div>
+        <div class="stat"><span class="k">Downloads</span><span class="v"></span></div>
+      </div>
+      <div class="acts">
+        <button class="btn small" data-copy>Copy</button>
+        <button class="btn small" data-del>Delete</button>
+      </div>`;
+
+    li.querySelector('.ic').textContent = ext(l.name);
+    li.querySelector('.nm').textContent = l.name;
+    if (l.locked) {
+      const chip = document.createElement('span');
+      chip.className = 'chip';
+      chip.textContent = 'Password';
+      li.querySelector('.nm').append(' ', chip);
+    }
+    li.querySelector('.url').textContent = l.url;
+
+    const [size, expires, downloads] = li.querySelectorAll('.stat .v');
+    size.textContent =
       l.status === 'zipping' ? `zipping… ${fmt(l.size)}` : l.status === 'ready' ? fmt(l.size) : l.status;
-    tr.children[2].textContent = when(l.expires);
-    tr.children[3].textContent = l.maxDownloads ? `${l.downloads} / ${l.maxDownloads}` : l.downloads;
-    const copyBtn = tr.querySelector('[data-copy]');
+    expires.textContent = when(l.expires);
+    downloads.textContent = l.maxDownloads ? `${l.downloads} / ${l.maxDownloads}` : l.downloads;
+
+    const copyBtn = li.querySelector('[data-copy]');
     copyBtn.onclick = async () => {
       copyBtn.textContent = (await copy(l.url)) ? 'Copied' : 'Select it';
       setTimeout(() => (copyBtn.textContent = 'Copy'), 1500);
     };
-    tr.querySelector('[data-del]').onclick = async () => {
+    li.querySelector('[data-del]').onclick = async () => {
       const what = l.status === 'zipping' ? `Cancel zipping ${l.name}?` : `Delete the link for ${l.name}?`;
       if (!confirm(what)) return;
       await api(`/api/links/${l.token}`, { method: 'DELETE' });
       refresh();
     };
-    $('links').append(tr);
+    $('links').append(li);
   }
   // Keep polling while a zip is building so the size ticks up.
   if (links.some((l) => l.status === 'zipping')) setTimeout(refresh, 3000);
@@ -184,7 +210,7 @@ async function refresh() {
 
 // ---- auth ----------------------------------------------------------------
 function show(view) {
-  $('login').classList.toggle('hide', view !== 'login');
+  $('auth').classList.toggle('hide', view !== 'login');
   $('main').classList.toggle('hide', view === 'login');
   if (view === 'login') $('pw').focus();
 }
@@ -217,13 +243,25 @@ $('saveCap').onclick = async () => {
   showCap(data.maxMbps);
 };
 
+$('saveTheme').onclick = async () => {
+  const r = await api('/api/settings', { method: 'PUT', body: JSON.stringify({ theme: $('theme').value }) });
+  if (!r.ok) {
+    $('themeStatus').textContent = (await r.json()).error ?? 'Failed';
+    return $('themeStatus').classList.add('err');
+  }
+  // The theme is resolved server-side into /theme.css, so it lands on a fresh load.
+  location.reload();
+};
+
 async function start() {
   const r = await api('/api/config');
   if (r.status === 401) return show('login');
   const { library } = await r.json();
   $('tabLibrary').classList.toggle('hide', !library);
   show('main');
-  showCap((await (await api('/api/settings')).json()).maxMbps);
+  const settings = await (await api('/api/settings')).json();
+  showCap(settings.maxMbps);
+  $('theme').value = settings.theme;
   refresh();
 }
 

@@ -1,0 +1,305 @@
+/* Handoff — the light variant, and the base every variant builds on.
+   The dark variant lives entirely in dark.css, which the server layers on top via
+   /theme.css. Nothing here is duplicated there beyond what actually differs.
+
+   Both surfaces load this file: the admin UI in index.html, and the recipient pages
+   server-rendered by src/server.ts. One stylesheet is the point — it's what stops the
+   two sides drifting apart.
+
+   Light is the warm direction: serif display face, roomy, metadata reads as a sentence.
+   Dark is the sharp direction: all sans, tighter, metadata reads as stat columns.
+   The two share a DOM. Only chrome and layout change — never the information on the
+   page, or the same link would describe itself differently to two people. */
+
+:root {
+  color-scheme: light;
+
+  --bg: #faf7f2;
+  --surface: #fff;
+  --line: #e6ded1;
+  --ink: #241f18;
+  --dim: #7c7364;
+  --accent: #2f6b4f;
+  --accent-ink: #fff;
+  --accent-soft: #eaf1ec;
+  --err: #b3261e;
+
+  --display: Georgia, 'Iowan Old Style', 'Times New Roman', serif;
+  --radius: 0.55rem;
+  --tracking: 0;
+  --row-pad: 0.7rem 0.8rem;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 15px/1.55 system-ui, -apple-system, sans-serif;
+  letter-spacing: var(--tracking);
+}
+
+/* ---- shared atoms -------------------------------------------------------- */
+
+.btn {
+  font: inherit;
+  font-weight: 600;
+  padding: 0.45rem 0.95rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.btn:disabled { opacity: 0.45; cursor: default; }
+.btn.small { padding: 0.25rem 0.6rem; font-size: 0.8rem; font-weight: 500; }
+
+input, select {
+  font: inherit;
+  width: 100%;
+  padding: 0.42rem 0.55rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: inherit;
+}
+input:focus-visible, select:focus-visible, .btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+label { display: block; font-size: 0.76rem; color: var(--dim); margin-bottom: 0.25rem; }
+
+.hide { display: none !important; }
+
+.sect { font-size: 0.74rem; color: var(--dim); margin: 1.5rem 0 0.55rem; }
+
+/* Extension chip. Text, not an emoji — renders the same on every platform and
+   needs no icon table. */
+.ic {
+  flex: none;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 0.45rem;
+  background: var(--accent-soft);
+  color: var(--accent);
+  display: grid;
+  place-items: center;
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
+
+.chip {
+  display: inline-block;
+  font-size: 0.62rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 0.08rem 0.35rem;
+  border-radius: 0.25rem;
+  border: 1px solid var(--line);
+  color: var(--dim);
+  vertical-align: 0.1em;
+}
+
+/* ---- stats --------------------------------------------------------------- */
+/* The one piece carrying both variants. Here: an inline sentence separated by
+   middots. In dark.css: bordered stat columns. Same markup either way. */
+
+.stats { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 0.4rem; }
+.stat { display: flex; align-items: baseline; gap: 0.28rem; font-size: 0.8rem; color: var(--dim); }
+.stat + .stat::before { content: '·'; color: var(--dim); }
+.stat .k { text-transform: lowercase; }
+/* A byte count says "size" on its own; a date does not say "expires". */
+.stat.size .k { display: none; }
+.stat .v { color: var(--ink); font-variant-numeric: tabular-nums; }
+
+/* ---- admin shell --------------------------------------------------------- */
+
+.shell { max-width: 54rem; margin: 0 auto; padding: 0 1rem 4rem; }
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 1.2rem 0 1rem;
+  margin-bottom: 1.4rem;
+  border-bottom: 1px solid var(--line);
+}
+.mark { font-family: var(--display); font-size: 1.3rem; font-weight: 600; letter-spacing: -0.01em; }
+.topmeta { margin-left: auto; font-size: 0.78rem; color: var(--dim); }
+
+/* Underlined tabs here; dark.css turns the same markup into a segmented control. */
+.tabs { display: flex; gap: 1.4rem; border-bottom: 1px solid var(--line); margin-bottom: 1.2rem; }
+.tabs button {
+  font: inherit;
+  font-size: 0.88rem;
+  padding: 0 0 0.55rem;
+  margin-bottom: -1px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--dim);
+  cursor: pointer;
+}
+.tabs button[aria-selected='true'] { color: var(--ink); font-weight: 600; border-bottom-color: var(--accent); }
+
+#drop {
+  border: 1.5px dashed var(--line);
+  border-radius: var(--radius);
+  padding: 2.2rem 1rem;
+  text-align: center;
+  color: var(--dim);
+  font-size: 0.88rem;
+  background: var(--surface);
+  cursor: pointer;
+}
+#drop.over { border-color: var(--accent); border-style: solid; color: var(--ink); }
+
+.opts { display: flex; gap: 0.6rem; align-items: end; flex-wrap: wrap; margin: 1rem 0 0.4rem; }
+.opts > div { flex: 1 1 8rem; }
+
+#status { font-size: 0.82rem; color: var(--dim); margin: 0.5rem 0 0; overflow-wrap: anywhere; }
+#prog { width: 100%; height: 0.4rem; margin-top: 0.5rem; }
+
+/* ---- library browser ----------------------------------------------------- */
+
+#crumbs {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.82rem;
+  color: var(--dim);
+  margin-bottom: 0.6rem;
+  overflow-wrap: anywhere;
+}
+#shareFolder { flex: none; }
+
+ul { list-style: none; margin: 0; padding: 0; }
+
+#files {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  overflow: hidden;
+}
+#files li {
+  display: flex;
+  gap: 0.6rem;
+  align-items: center;
+  padding: 0.45rem 0.7rem;
+  cursor: pointer;
+  font-size: 0.86rem;
+}
+#files li + li { border-top: 1px solid var(--line); }
+#files li:hover { background: var(--accent-soft); }
+#files li[aria-selected='true'] { background: var(--accent-soft); font-weight: 600; }
+#files .size { margin-left: auto; color: var(--dim); font-size: 0.78rem; white-space: nowrap; }
+
+/* ---- links list ---------------------------------------------------------- */
+
+#links { border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); overflow: hidden; }
+#links:empty { display: none; }
+#links li { display: flex; gap: 0.7rem; align-items: center; padding: var(--row-pad); }
+#links li + li { border-top: 1px solid var(--line); }
+.main { min-width: 0; flex: 1 1 12rem; }
+.nm { font-size: 0.88rem; font-weight: 600; overflow-wrap: anywhere; }
+/* One line, clipped. A share URL is for copying, not reading, and letting it wrap
+   makes every row a different height. */
+.url {
+  display: block;
+  font-size: 0.72rem;
+  color: var(--dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.acts { flex: none; display: flex; gap: 0.35rem; }
+
+.empty { color: var(--dim); font-size: 0.86rem; padding: 0.4rem 0; }
+
+/* On a phone the stat columns have no room to be columns. */
+@media (max-width: 34rem) {
+  #links li { flex-wrap: wrap; }
+  .stats { width: 100%; }
+}
+
+/* ---- settings ------------------------------------------------------------ */
+
+#settings { margin-top: 2.5rem; border-top: 1px solid var(--line); padding-top: 1rem; }
+#settings summary { cursor: pointer; font-size: 0.8rem; color: var(--dim); margin-bottom: 1rem; }
+#settings .opts { max-width: 30rem; margin-top: 0; }
+#settings .opts + .hint { margin-top: 0.5rem; }
+.hint { font-size: 0.8rem; color: var(--dim); max-width: 40rem; line-height: 1.5; }
+.setting + .setting { margin-top: 1.6rem; }
+
+/* ---- centred card: login, and every recipient-facing page ---------------- */
+
+.center { display: grid; place-items: center; min-height: 100vh; padding: 1.5rem 1rem; }
+
+/* Light leans on the warm page behind it; dark.css gives the card a real surface. */
+.card {
+  width: 100%;
+  max-width: 22rem;
+  text-align: center;
+  border: 1px solid transparent;
+  border-radius: 0.8rem;
+  padding: 1.6rem 1.3rem;
+}
+
+.card .ic { width: 2.9rem; height: 2.9rem; border-radius: 0.7rem; font-size: 0.72rem; margin: 0 auto 0.8rem; }
+
+.kicker { font-size: 0.78rem; color: var(--dim); margin: 0 0 0.9rem; }
+
+.fname {
+  font-family: var(--display);
+  font-size: 1.2rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin: 0 0 0.7rem;
+  overflow-wrap: anywhere;
+}
+
+.card .stats { justify-content: center; margin-bottom: 1.1rem; }
+.card .btn { display: block; width: 100%; padding: 0.62rem; font-size: 0.92rem; text-decoration: none; }
+.card input { margin-bottom: 0.6rem; text-align: center; }
+.card form { margin: 0; }
+.note { font-size: 0.76rem; color: var(--dim); line-height: 1.5; margin: 0.9rem 0 0; }
+.card .err { margin: 0.7rem 0 0; font-size: 0.82rem; }
+
+/* Login reuses the card, but left-aligns its field like the rest of the admin UI. */
+.auth { text-align: left; }
+.auth .fname { text-align: center; }
+.auth .btn { margin-top: 0.8rem; }
+
+/* The zip-in-progress page has no button to press; the bar carries the waiting. */
+.bar {
+  height: 0.35rem;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  overflow: hidden;
+  margin: 0.2rem 0 0;
+}
+.bar::after {
+  content: '';
+  display: block;
+  height: 100%;
+  width: 35%;
+  border-radius: inherit;
+  background: var(--accent);
+  animation: slide 1.4s ease-in-out infinite;
+}
+@keyframes slide {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(340%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .bar::after { animation: none; width: 100%; opacity: 0.5; }
+}
+
+/* Last, and specific enough to beat #status / .hint, which both set a colour. */
+#status.err,
+.err { color: var(--err); }

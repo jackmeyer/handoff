@@ -171,6 +171,18 @@ export function createApp(cfg: Config) {
   // so a change takes effect on downloads that are already running.
   let globalBucket: Bucket | null = null;
 
+  // ---- theme ---------------------------------------------------------------
+  // Deployment-wide, not per-visitor: the admin picks how Handoff looks for
+  // everyone, including the recipients who never see the admin UI.
+  const THEMES = ['auto', 'light', 'dark'] as const;
+  type Theme = (typeof THEMES)[number];
+  const isTheme = (v: unknown): v is Theme => THEMES.includes(v as Theme);
+
+  const readTheme = (): Theme => {
+    const v = (q.getSetting.get('theme') as { value: string } | undefined)?.value;
+    return isTheme(v) ? v : 'auto';
+  };
+
   const readMax = (): number | null => {
     const row = q.getSetting.get('maxMbps') as { value: string } | undefined;
     const n = Number(row?.value);
@@ -309,17 +321,45 @@ export function createApp(cfg: Config) {
   });
 
   app.get('/api/settings', requireAdmin, (_req, res) => {
-    res.json({ maxMbps: readMax() });
+    res.json({ maxMbps: readMax(), theme: readTheme() });
   });
 
   app.put('/api/settings', requireAdmin, (req, res) => {
-    const raw = req.body?.maxMbps;
-    const mbps = raw === null || raw === undefined || raw === '' ? null : Number(raw);
-    if (mbps !== null && (!Number.isFinite(mbps) || mbps <= 0)) {
-      return res.status(400).json({ error: 'Speed limit must be a positive number of Mbps' });
+    const b = req.body ?? {};
+    // Apply only the keys that were sent. Once there's more than one setting here,
+    // "absent" has to mean "leave alone" — otherwise saving the theme silently
+    // clears the speed limit.
+    if ('maxMbps' in b) {
+      const raw = b.maxMbps;
+      const mbps = raw === null || raw === undefined || raw === '' ? null : Number(raw);
+      if (mbps !== null && (!Number.isFinite(mbps) || mbps <= 0)) {
+        return res.status(400).json({ error: 'Speed limit must be a positive number of Mbps' });
+      }
+      applyMax(mbps);
     }
-    applyMax(mbps);
-    res.json({ maxMbps: mbps });
+    if ('theme' in b) {
+      if (!isTheme(b.theme)) return res.status(400).json({ error: 'Unknown theme' });
+      q.setSetting.run('theme', b.theme);
+    }
+    res.json({ maxMbps: readMax(), theme: readTheme() });
+  });
+
+  // The whole theme decision, resolved once, server-side. Light needs nothing on top
+  // of style.css; dark ships dark.css, either outright or behind the OS preference.
+  // Doing it here is what keeps the recipient pages themed without any inline script —
+  // the CSP has no 'unsafe-inline' for scripts, and adding one for a colour scheme
+  // would be a bad trade.
+  const darkCssFile = path.join(HERE, '..', 'public', 'dark.css');
+  app.get('/theme.css', (_req, res) => {
+    const theme = readTheme();
+    // no-cache, not no-store: the browser still revalidates cheaply, but a theme
+    // change shows up on the next load instead of whenever the cache expires.
+    res.type('css').set('cache-control', 'no-cache');
+    if (theme === 'light') return res.send('');
+    // Read per request so editing dark.css doesn't need a restart. One small file
+    // per page load — no worse than what express.static already does.
+    const css = fs.readFileSync(darkCssFile, 'utf8');
+    res.send(theme === 'dark' ? css : `@media (prefers-color-scheme: dark) {\n${css}\n}`);
   });
 
   app.get('/api/browse', requireAdmin, (req, res) => {
@@ -434,50 +474,78 @@ export function createApp(cfg: Config) {
     return l;
   };
 
+  // The recipient pages share public/style.css with the admin UI, so the light
+  // and dark variants can't drift apart between the two surfaces.
   const page = (title: string, body: string) => `<!doctype html><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
 <title>${esc(title)}</title>
-<style>
- :root{color-scheme:light dark}
- body{font:16px/1.5 system-ui,sans-serif;display:grid;place-items:center;min-height:100vh;margin:0;padding:1rem}
- .card{max-width:26rem;width:100%;text-align:center}
- h1{font-size:1.25rem;margin:0 0 .25rem;overflow-wrap:anywhere}
- p{margin:.25rem 0;opacity:.7;font-size:.9rem}
- a.btn,button{display:inline-block;margin-top:1.25rem;padding:.7rem 1.4rem;border:0;border-radius:.5rem;
-  background:#2563eb;color:#fff;font:inherit;font-weight:600;text-decoration:none;cursor:pointer}
- input{width:100%;box-sizing:border-box;margin-top:1rem;padding:.6rem;font:inherit;
-  border:1px solid #8886;border-radius:.5rem;background:transparent;color:inherit}
-</style>
-<div class=card>${body}</div>`;
+<link rel=stylesheet href="/style.css">
+<link rel=stylesheet href="/theme.css">
+<div class=center><div class=card>${body}</div></div>`;
+
+  // Matches ext() in public/app.js: a text chip renders the same everywhere and
+  // needs no icon table. Shown in the light variant only.
+  const ext = (name: string) => (/\.([a-z0-9]{1,4})$/i.exec(name)?.[1] ?? 'file').toUpperCase();
+
+  const stat = (k: string, v: string, cls = '') =>
+    `<div class="stat ${cls}"><span class="k">${k}</span><span class="v">${esc(v)}</span></div>`;
+
+  const on = (ms: number, time = false) =>
+    new Date(ms).toLocaleString('en-US', { dateStyle: 'medium', ...(time && { timeStyle: 'short' }) });
+
+  /** Kicker, extension chip, filename — the head of every file-bearing state. */
+  const head = (l: Link, kicker: string) =>
+    `<p class=kicker>${kicker}</p><div class=ic>${ext(l.name)}</div><h1 class=fname>${esc(l.name)}</h1>`;
 
   app.get('/d/:token', (req, res) => {
     const l = live(req.params.token);
-    if (!l) return res.status(404).type('html').send(page('Link expired', '<h1>This link has expired</h1>'));
+    // Expired and never-existed are deliberately the same page: telling a stranger
+    // which one they hit leaks whether the token was ever real.
+    if (!l) {
+      return res.status(404).type('html').send(
+        page(
+          'Link expired',
+          `<p class=kicker>Handoff</p><h1 class=fname>This link has expired</h1>
+           <p class=note>Links stop working once they pass their expiry date or hit their download limit.
+           Ask whoever sent it for a new one.</p>`,
+        ),
+      );
+    }
 
     if (l.status === 'zipping') {
       return res
         .type('html')
         .set('refresh', '10')
-        .send(page(l.name, `<h1>${esc(l.name)}</h1><p>Still being prepared — this page refreshes itself.</p>`));
+        .send(
+          page(
+            l.name,
+            `${head(l, 'Getting your file ready')}<div class=bar></div>
+             <p class=note>This is still being packaged up — larger folders take a few minutes.
+             Leave this page open, it refreshes itself.</p>`,
+          ),
+        );
     }
+
     if (l.status !== 'ready') {
-      return res.status(503).type('html').send(page(l.name, '<h1>This file is not available</h1>'));
+      return res.status(503).type('html').send(
+        page(
+          l.name,
+          `${head(l, 'Handoff')}<p class=note>Something went wrong while preparing this file.
+           Ask whoever sent it to try again.</p>`,
+        ),
+      );
     }
 
-    const unlocked = !l.pw || unsign(SECRET, cookies(req)[`u_${l.token}`]) === l.token;
-    const meta = `<p>${bytes(l.size)} — available until ${new Date(l.expires).toLocaleString('en-US', {
-      dateStyle: 'medium',
-      timeStyle: 'short',
-    })}</p>`;
+    const meta = `<div class=stats>${stat('Size', bytes(l.size), 'size')}${stat('Expires', on(l.expires))}</div>`;
 
-    if (!unlocked) {
+    if (l.pw && unsign(SECRET, cookies(req)[`u_${l.token}`]) !== l.token) {
       return res.type('html').send(
         page(
           l.name,
-          `<h1>${esc(l.name)}</h1>${meta}
+          `${head(l, 'Password required')}${meta}
            <form method=post><input type=password name=password placeholder="Password" autofocus required>
-           <button>Unlock</button></form>
-           ${req.query.bad ? '<p style="color:#dc2626">Wrong password</p>' : ''}`,
+           <button class="btn primary">Unlock</button></form>
+           ${req.query.bad ? '<p class=err>That password didn’t work. Try again.</p>' : ''}`,
         ),
       );
     }
@@ -485,8 +553,9 @@ export function createApp(cfg: Config) {
     res.type('html').send(
       page(
         l.name,
-        `<h1>${esc(l.name)}</h1>${meta}
-         <a class=btn href="/f/${l.token}/${encodeURIComponent(l.name)}" download>Download</a>`,
+        `${head(l, 'Shared with you')}${meta}
+         <a class="btn primary" href="/f/${l.token}/${encodeURIComponent(l.name)}" download>Download</a>
+         <p class=note>Access ends ${esc(on(l.expires, true))}. Save the file somewhere safe once it finishes.</p>`,
       ),
     );
   });
