@@ -170,6 +170,11 @@ async function refresh() {
   const r = await api('/api/links');
   if (r.status === 401) return show('login');
   const links = await r.json();
+  // Rebuilding the rows detaches whatever the open menu was anchored to. Closing
+  // it outright would make the menu snap shut under the pointer every 3s while a
+  // zip polls, so re-point it at the new button instead and only close it if the
+  // link it belongs to is actually gone.
+  const openFor = $('rowMenu').matches(':popover-open') ? menuFor?.token : null;
   $('links').innerHTML = '';
   $('noLinks').classList.toggle('hide', links.length > 0);
   $('count').textContent = links.length ? `${links.length} active ${links.length === 1 ? 'link' : 'links'}` : '';
@@ -185,8 +190,7 @@ async function refresh() {
         <div class="stat"><span class="k">Downloads</span><span class="v"></span></div>
       </div>
       <div class="acts">
-        <button class="btn small" data-copy>Copy</button>
-        <button class="btn small" data-del>Delete</button>
+        <button type="button" class="btn small dots">⋯</button>
       </div>`;
 
     li.querySelector('.ic').textContent = ext(l.name);
@@ -205,22 +209,134 @@ async function refresh() {
     expires.textContent = when(l.expires);
     downloads.textContent = l.maxDownloads ? `${l.downloads} / ${l.maxDownloads}` : l.downloads;
 
-    const copyBtn = li.querySelector('[data-copy]');
-    copyBtn.onclick = async () => {
-      copyBtn.textContent = (await copy(l.url)) ? 'Copied' : 'Select it';
-      setTimeout(() => (copyBtn.textContent = 'Copy'), 1500);
+    // Three identical ⋯ buttons need to be told apart by anything reading the page.
+    const dots = li.querySelector('.dots');
+    dots.setAttribute('aria-label', `Actions for ${l.name}`);
+    // Light dismiss has already closed the menu by the time click runs, so which
+    // row it belonged to has to be captured on the way down.
+    dots.onpointerdown = () => (openAtPress = $('rowMenu').matches(':popover-open') ? menuAnchor : null);
+    dots.onclick = () => {
+      const menu = $('rowMenu');
+      const reclick = openAtPress === dots;
+      openAtPress = null;
+      // Always close first: reopening is what re-fires beforetoggle, and without it
+      // a menu that's already open would keep the previous row's position.
+      menu.togglePopover(false);
+      if (reclick) return;
+      menuFor = l;
+      menuAnchor = dots;
+      menu.togglePopover(true);
     };
-    li.querySelector('[data-del]').onclick = async () => {
-      const what = l.status === 'zipping' ? `Cancel zipping ${l.name}?` : `Delete the link for ${l.name}?`;
-      if (!confirm(what)) return;
-      await api(`/api/links/${l.token}`, { method: 'DELETE' });
-      refresh();
-    };
+    if (openFor === l.token) ((menuFor = l), (menuAnchor = dots));
+
     $('links').append(li);
   }
+  if (openFor && !links.some((l) => l.token === openFor)) $('rowMenu').togglePopover?.(false);
+
   // Keep polling while a zip is building so the size ticks up.
   if (links.some((l) => l.status === 'zipping')) setTimeout(refresh, 3000);
 }
+
+// ---- row menu ------------------------------------------------------------
+// One menu for every row rather than one per row: the row only has to say which
+// link it stands for.
+//
+// Open/close is driven from JS rather than popovertarget. The declarative version
+// can't express "move to another row": with the default toggle action a second
+// row's button closes the open menu, and with action="show" the menu stays put
+// while its actions retarget to the new row — visibly pointing at one link while
+// acting on another.
+let menuFor = null;
+let menuAnchor = null;
+let openAtPress = null;
+
+// beforetoggle, not toggle: it fires synchronously before the menu is shown, so the
+// position lands in the same frame it becomes visible. toggle is queued as a task,
+// which meant the browser painted the menu at its previous spot — or at 0,0 the
+// first time — and only then moved it.
+$('rowMenu').addEventListener('beforetoggle', (e) => {
+  if (e.newState !== 'open' || !menuAnchor) return;
+  const m = $('rowMenu');
+  const a = menuAnchor.getBoundingClientRect();
+
+  // Anchor to edges rather than corners so nothing has to be measured: `right`
+  // aligns to the button without knowing the menu's width, and `bottom` flips it
+  // above without knowing its height. Measuring is what forced this to wait until
+  // the menu was visible in the first place.
+  m.style.left = 'auto';
+  m.style.right = `${Math.max(8, innerWidth - a.right)}px`;
+
+  // Buttons in the lower half open upward. A three-item menu always fits in half a
+  // viewport, so this needs no height and is right on the very first open.
+  if (a.bottom > innerHeight / 2) {
+    m.style.top = 'auto';
+    m.style.bottom = `${innerHeight - a.top + 4}px`;
+  } else {
+    m.style.bottom = 'auto';
+    m.style.top = `${a.bottom + 4}px`;
+  }
+});
+
+$('rowMenu').addEventListener('toggle', (e) => {
+  // Focus has to wait until it's actually visible — you can't focus display: none.
+  // #rowMenu sits at the end of the body, so tabbing from the button would
+  // otherwise walk the whole page before reaching the menu.
+  if (e.newState === 'open') $('rowMenu').querySelector('.menu-item').focus();
+});
+
+const copyLink = async (l) =>
+  toast((await copy(l.url)) ? 'Link copied to clipboard' : 'Could not copy — select the link and copy it');
+
+const deleteLink = async (l) => {
+  const what = l.status === 'zipping' ? `Cancel zipping ${l.name}?` : `Delete the link for ${l.name}?`;
+  if (!confirm(what)) return;
+  await api(`/api/links/${l.token}`, { method: 'DELETE' });
+  toast('Link deleted');
+  refresh();
+};
+
+for (const item of $('rowMenu').querySelectorAll('[data-menu]')) {
+  item.onclick = () => {
+    const l = menuFor;
+    $('rowMenu').togglePopover?.(false);
+    ({ copy: copyLink, edit: openEdit, del: deleteLink })[item.dataset.menu](l);
+  };
+}
+
+// ---- editing a live link -------------------------------------------------
+// The token never changes, so extending an expiry or raising a limit fixes the
+// link someone already has rather than making them chase a new one.
+let editing = null;
+
+function openEdit(l) {
+  editing = l;
+  $('editName').textContent = l.name;
+  // Blank by default: the expiry only moves if it's explicitly chosen, so raising
+  // a download limit doesn't quietly restart the clock too.
+  $('editHours').value = '';
+  $('editExpiry').textContent = `Currently expires ${when(l.expires)}`;
+  $('editMax').value = l.maxDownloads ?? '';
+  $('editDownloads').textContent = l.downloads
+    ? `Downloaded ${l.downloads} ${l.downloads === 1 ? 'time' : 'times'} so far`
+    : 'Not downloaded yet';
+  $('editErr').textContent = '';
+  $('edit').showModal();
+}
+
+$('editCancel').onclick = () => $('edit').close();
+
+$('editForm').onsubmit = async (e) => {
+  e.preventDefault();
+  const body = { maxDownloads: $('editMax').value || null };
+  if ($('editHours').value) body.hours = Number($('editHours').value);
+
+  const r = await api(`/api/links/${editing.token}`, { method: 'PATCH', body: JSON.stringify(body) });
+  if (!r.ok) return ($('editErr').textContent = (await r.json()).error ?? 'Could not save');
+
+  $('edit').close();
+  toast('Link updated');
+  refresh();
+};
 
 // ---- auth ----------------------------------------------------------------
 function show(view) {

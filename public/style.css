@@ -275,6 +275,58 @@ ul { list-style: none; margin: 0; padding: 0; }
 .auth .fname { text-align: center; }
 .auth .btn { margin-top: 0.8rem; }
 
+/* ---- row menu ------------------------------------------------------------ */
+/* popover="auto", so Esc and click-away dismissal are the browser's problem, and
+   the top layer keeps it from being clipped by #links' overflow: hidden.
+   `inset: auto` undoes the UA sheet's centring so the JS-set left/top apply. */
+
+#rowMenu {
+  inset: auto;
+  margin: 0;
+  padding: 0.25rem;
+  min-width: 9rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: 0 0.4rem 1.5rem rgb(0 0 0 / 0.18);
+}
+.menu-item {
+  display: block;
+  width: 100%;
+  padding: 0.4rem 0.6rem;
+  border: 0;
+  border-radius: calc(var(--radius) - 0.15rem);
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 0.84rem;
+  text-align: left;
+  cursor: pointer;
+}
+.menu-item:hover { background: var(--accent-soft); }
+.menu-item.danger { color: var(--err); }
+
+.dots { line-height: 1; padding: 0.25rem 0.5rem; font-size: 1rem; }
+
+/* ---- edit dialog --------------------------------------------------------- */
+/* Native <dialog>, so focus trapping, Esc-to-close and the backdrop come free. */
+
+dialog {
+  width: min(24rem, calc(100% - 2rem));
+  padding: 1.4rem;
+  border: 1px solid var(--line);
+  border-radius: 0.8rem;
+  background: var(--surface);
+  color: var(--ink);
+}
+dialog::backdrop { background: rgb(0 0 0 / 0.45); }
+dialog .fname { text-align: center; margin-bottom: 1.2rem; }
+dialog label { margin-top: 1rem; }
+dialog .hint { margin: 0.3rem 0 0; font-size: 0.76rem; }
+dialog .err:empty { display: none; }
+dialog .err { margin: 1rem 0 0; font-size: 0.82rem; }
+.acts.end { justify-content: flex-end; margin-top: 1.5rem; gap: 0.5rem; }
+
 /* ---- toast --------------------------------------------------------------- */
 /* A [popover], so the browser puts it in the top layer — no z-index to lose track
    of. The ID beats the UA sheet's `inset: 0; margin: auto` centring. */

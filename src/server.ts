@@ -96,6 +96,7 @@ export function createApp(cfg: Config) {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
     ),
     finish: db.prepare('UPDATE links SET status = ?, size = ? WHERE token = ?'),
+    edit: db.prepare('UPDATE links SET expires = ?, maxDownloads = ? WHERE token = ?'),
     count: db.prepare('UPDATE links SET downloads = downloads + 1 WHERE token = ?'),
     del: db.prepare('DELETE FROM links WHERE token = ?'),
     dead: db.prepare(
@@ -455,6 +456,45 @@ export function createApp(cfg: Config) {
       q.finish.run('error', 0, l.token);
       if (!res.headersSent) res.status(500).json({ error: 'Upload failed' });
     }
+  });
+
+  // Extend an expiry, or raise a download limit, without reissuing the link — the
+  // token stays valid, so whoever already has it doesn't need a new one.
+  app.patch('/api/links/:token', requireAdmin, (req, res) => {
+    // live(), not get(): a link that's already dead is gone, and reviving one the
+    // admin's list no longer shows would be a surprise.
+    const l = live(String(req.params.token));
+    if (!l) return res.status(404).json({ error: 'No such link' });
+
+    const b = req.body ?? {};
+    let { expires, maxDownloads } = l;
+
+    // Absent means "leave alone", so the admin can raise a limit without also
+    // silently resetting the expiry clock.
+    if ('hours' in b) {
+      const hours = Number(b.hours);
+      if (!Number.isFinite(hours) || hours <= 0) return res.status(400).json({ error: 'Bad expiry' });
+      expires = Date.now() + hours * 3600e3;
+    }
+
+    if ('maxDownloads' in b) {
+      const raw = b.maxDownloads;
+      maxDownloads = raw === null || raw === undefined || raw === '' ? null : Number(raw);
+      if (maxDownloads !== null && (!Number.isInteger(maxDownloads) || maxDownloads < 1)) {
+        return res.status(400).json({ error: 'Bad download limit' });
+      }
+      // A limit at or below the count already reached kills the link on the next
+      // sweep, taking any uploaded file with it. That's a delete wearing an edit's
+      // clothes, so make it be asked for explicitly.
+      if (maxDownloads !== null && maxDownloads <= l.downloads) {
+        return res.status(400).json({
+          error: `Already downloaded ${l.downloads} ${l.downloads === 1 ? 'time' : 'times'} — pick a higher limit, or delete the link`,
+        });
+      }
+    }
+
+    q.edit.run(expires, maxDownloads, l.token);
+    res.json({ ok: true, expires, maxDownloads });
   });
 
   app.delete('/api/links/:token', requireAdmin, (req, res) => {

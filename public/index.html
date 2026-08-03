@@ -100,6 +100,38 @@
   </details>
 </div>
 
+<div id="rowMenu" popover>
+  <button type="button" class="menu-item" data-menu="copy">Copy link</button>
+  <button type="button" class="menu-item" data-menu="edit">Edit</button>
+  <button type="button" class="menu-item danger" data-menu="del">Delete</button>
+</div>
+
+<dialog id="edit">
+  <form id="editForm">
+    <h2 class="fname" id="editName"></h2>
+
+    <label for="editHours">Expires</label>
+    <select id="editHours">
+      <option value="">Keep current expiry</option>
+      <option value="24">24 hours from now</option>
+      <option value="168">7 days from now</option>
+      <option value="720">30 days from now</option>
+      <option value="2160">90 days from now</option>
+    </select>
+    <p class="hint" id="editExpiry"></p>
+
+    <label for="editMax">Download limit</label>
+    <input id="editMax" type="number" min="1" placeholder="Blank for unlimited" />
+    <p class="hint" id="editDownloads"></p>
+
+    <p id="editErr" class="err"></p>
+    <div class="acts end">
+      <button type="button" class="btn" id="editCancel">Cancel</button>
+      <button class="btn primary">Save changes</button>
+    </div>
+  </form>
+</dialog>
+
 <div id="toast" popover="manual" role="status"></div>
 
 <script type="module" src="app.js"></script>

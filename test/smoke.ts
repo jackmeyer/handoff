@@ -229,6 +229,49 @@ assert.equal(head.headers.get('accept-ranges'), 'bytes');
 
 step('range edge cases');
 
+// --- editing a live link ------------------------------------------------------
+// The token has to survive an edit, or every change would strand whoever already
+// has the link.
+const ed = await mkLink({ source: 'library', path: 'notes.txt', hours: 1, maxDownloads: 2 });
+const patch = (body: unknown) => call(`/api/links/${ed.token}`, { method: 'PATCH', body: JSON.stringify(body) });
+const readLink = async () =>
+  ((await (await call('/api/links')).json()) as { token: string; expires: number; maxDownloads: number | null }[]).find(
+    (l) => l.token === ed.token,
+  )!;
+
+const before = await readLink();
+assert.equal((await patch({ hours: 48 })).status, 200, 'expiry extended');
+assert.ok((await readLink()).expires > before.expires, 'extending moved the expiry out');
+assert.equal((await fetch(`${base}/f/${ed.token}/notes.txt`)).status, 200, 'the same token still works after an edit');
+
+// Absent keys must not be touched — raising a limit can't silently reset the clock.
+const extended = await readLink();
+assert.equal((await patch({ maxDownloads: 5 })).status, 200, 'limit raised');
+const afterLimit = await readLink();
+assert.equal(afterLimit.maxDownloads, 5, 'new limit stored');
+assert.equal(afterLimit.expires, extended.expires, 'editing the limit left the expiry alone');
+
+assert.equal((await patch({ maxDownloads: null })).status, 200, 'limit cleared');
+assert.equal((await readLink()).maxDownloads, null, 'cleared limit persisted as unlimited');
+
+// One download has happened (the token check above), so a limit of 1 would delete
+// the link on the next sweep. That has to be refused rather than silently obeyed.
+const suicide = await patch({ maxDownloads: 1 });
+assert.equal(suicide.status, 400, 'limit at or below the count refused');
+assert.match(((await suicide.json()) as { error: string }).error, /already downloaded/i, 'refusal says why');
+assert.ok(await readLink(), 'refused edit left the link alive');
+
+assert.equal((await patch({ hours: 0 })).status, 400, 'zero expiry refused');
+assert.equal((await patch({ maxDownloads: 2.5 })).status, 400, 'fractional limit refused');
+assert.equal((await call('/api/links/nope', { method: 'PATCH', body: '{}' })).status, 404, 'unknown token 404s');
+
+const savedSess = sess;
+sess = '';
+assert.equal((await patch({ hours: 1 })).status, 401, 'editing requires auth');
+sess = savedSess;
+
+step('links are editable in place, without reissuing the token');
+
 // --- server-wide speed limit -------------------------------------------------
 // A second deployment, capped globally, to check the limit applies across
 // different links rather than only within one.
