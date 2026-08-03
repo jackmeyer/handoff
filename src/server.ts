@@ -1,6 +1,7 @@
 import express, { type Request, type RequestHandler } from 'express';
 import { DatabaseSync } from 'node:sqlite';
-import { createHash, createHmac, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
+import { createHmac, randomBytes, scrypt, scryptSync, timingSafeEqual } from 'node:crypto';
+import { promisify } from 'node:util';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -55,9 +56,9 @@ const cookies = (req: Request): Record<string, string> =>
       .filter(([k]) => k),
   );
 
-/** Constant-time compare that also hides length. */
-const sameSecret = (a: string, b: string) =>
-  timingSafeEqual(createHash('sha256').update(a).digest(), createHash('sha256').update(b).digest());
+/** Async so a flood of login attempts uses the threadpool instead of stalling
+ *  the event loop for everyone downloading. */
+const derive = promisify(scrypt) as (pw: string, salt: Buffer, len: number) => Promise<Buffer>;
 
 export function createApp(cfg: Config) {
   const filesDir = path.join(cfg.dataDir, 'files');
@@ -107,24 +108,33 @@ export function createApp(cfg: Config) {
   };
   const get = (token: string) => q.get.get(token) as Link | undefined;
 
+  // Deriving the admin password costs ~100ms, which is what stops an exposed
+  // login endpoint from being brute-forceable at network speed.
+  const adminHash = scryptSync(cfg.adminPassword, SECRET, 32);
+  // Sessions are signed with a key derived from the password, so changing
+  // ADMIN_PASSWORD immediately invalidates every session that was already open.
+  const sessionKey = createHmac('sha256', SECRET).update(adminHash).digest();
+
   // ---- signing -------------------------------------------------------------
-  const mac = (v: string) => createHmac('sha256', SECRET).update(v).digest('base64url');
-  const sign = (v: string) => `${v}.${mac(v)}`;
-  const unsign = (s: string | undefined): string | null => {
+  const mac = (key: Buffer, v: string) => createHmac('sha256', key).update(v).digest('base64url');
+  const sign = (key: Buffer, v: string) => `${v}.${mac(key, v)}`;
+  const unsign = (key: Buffer, s: string | undefined): string | null => {
     if (!s) return null;
     const i = s.lastIndexOf('.');
     if (i < 0) return null;
     const v = s.slice(0, i);
-    return sameSecret(s.slice(i + 1), mac(v)) ? v : null;
+    const got = Buffer.from(s.slice(i + 1));
+    const want = Buffer.from(mac(key, v));
+    return got.length === want.length && timingSafeEqual(got, want) ? v : null;
   };
 
   const hashPw = (pw: string) => {
     const salt = randomBytes(16);
     return `${salt.toString('hex')}:${scryptSync(pw, salt, 32).toString('hex')}`;
   };
-  const checkPw = (pw: string, stored: string) => {
+  const checkPw = async (pw: string, stored: string) => {
     const [salt, want] = stored.split(':');
-    return timingSafeEqual(Buffer.from(want, 'hex'), scryptSync(pw, Buffer.from(salt, 'hex'), 32));
+    return timingSafeEqual(Buffer.from(want, 'hex'), await derive(pw, Buffer.from(salt, 'hex'), 32));
   };
 
   // ---- library path containment -------------------------------------------
@@ -245,18 +255,44 @@ export function createApp(cfg: Config) {
   app.set('x-powered-by', false);
   app.use(express.json({ limit: '1mb' }));
 
+  app.use((_req, res, next) => {
+    res.set({
+      'x-content-type-options': 'nosniff',
+      'x-frame-options': 'DENY',
+      // Referer would otherwise carry the share token to any site the recipient
+      // clicks through to.
+      'referrer-policy': 'no-referrer',
+      'content-security-policy':
+        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; " +
+        "frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+    });
+    next();
+  });
+
   const requireAdmin: RequestHandler = (req, res, next) => {
-    const v = unsign(cookies(req).sess);
+    const v = unsign(sessionKey, cookies(req).sess);
     if (v && Number(v) > Date.now()) return next();
     res.status(401).json({ error: 'Not signed in' });
   };
 
-  app.post('/api/login', (req, res) => {
-    if (!sameSecret(String(req.body?.password ?? ''), cfg.adminPassword)) {
+  // Progressive delay rather than lockout: a brute force slows to a crawl, but an
+  // attacker can never lock the real admin out of their own server.
+  let failures = 0;
+
+  app.post('/api/login', async (req, res) => {
+    const attempt = await derive(String(req.body?.password ?? ''), SECRET, 32);
+    if (!timingSafeEqual(attempt, adminHash)) {
+      await new Promise((r) => setTimeout(r, Math.min(++failures * 250, 5000)));
       return res.status(401).json({ error: 'Wrong password' });
     }
+    failures = 0;
     const until = Date.now() + 7 * 864e5;
-    res.cookie('sess', sign(String(until)), { httpOnly: true, sameSite: 'lax', maxAge: 7 * 864e5 });
+    res.cookie('sess', sign(sessionKey, String(until)), {
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: req.secure, // set when a proxy terminates TLS, absent on plain LAN http
+      maxAge: 7 * 864e5,
+    });
     res.json({ ok: true });
   });
 
@@ -428,7 +464,7 @@ export function createApp(cfg: Config) {
       return res.status(503).type('html').send(page(l.name, '<h1>This file is not available</h1>'));
     }
 
-    const unlocked = !l.pw || unsign(cookies(req)[`u_${l.token}`]) === l.token;
+    const unlocked = !l.pw || unsign(SECRET, cookies(req)[`u_${l.token}`]) === l.token;
     const meta = `<p>${bytes(l.size)} — available until ${new Date(l.expires).toLocaleString('en-US', {
       dateStyle: 'medium',
       timeStyle: 'short',
@@ -455,20 +491,25 @@ export function createApp(cfg: Config) {
     );
   });
 
-  app.post('/d/:token', express.urlencoded({ extended: false, limit: '4kb' }), (req, res) => {
-    const l = live(req.params.token);
+  app.post('/d/:token', express.urlencoded({ extended: false, limit: '4kb' }), async (req, res) => {
+    const l = live(String(req.params.token));
     if (!l?.pw) return res.redirect(303, `/d/${req.params.token}`);
-    if (!checkPw(String(req.body?.password ?? ''), l.pw)) {
+    if (!(await checkPw(String(req.body?.password ?? ''), l.pw))) {
       return res.redirect(303, `/d/${l.token}?bad=1`);
     }
-    res.cookie(`u_${l.token}`, sign(l.token), { httpOnly: true, sameSite: 'lax', maxAge: 864e5 });
+    res.cookie(`u_${l.token}`, sign(SECRET, l.token), {
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: req.secure,
+      maxAge: 864e5,
+    });
     res.redirect(303, `/d/${l.token}`);
   });
 
   app.get('/f/:token/:name', (req, res) => {
     const l = live(String(req.params.token));
     if (!l || l.status !== 'ready') return res.status(404).type('text').send('Expired');
-    if (l.pw && unsign(cookies(req)[`u_${l.token}`]) !== l.token) return res.redirect(303, `/d/${l.token}`);
+    if (l.pw && unsign(SECRET, cookies(req)[`u_${l.token}`]) !== l.token) return res.redirect(303, `/d/${l.token}`);
 
     let stat: fs.Stats;
     try {

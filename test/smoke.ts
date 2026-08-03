@@ -66,7 +66,23 @@ sess = grabCookie(login);
 assert.ok(sess.startsWith('sess='), 'session cookie issued');
 assert.equal((await call('/api/links')).status, 200, 'session works');
 
-step('auth');
+// Wrong passwords get progressively slower, so an exposed login endpoint can't
+// be hammered at network speed.
+const bruteStart = performance.now();
+for (let i = 0; i < 4; i++) assert.equal((await post('/api/login', { password: 'nope' })).status, 401);
+const bruteMs = performance.now() - bruteStart;
+assert.ok(bruteMs > 500, `failed logins were not throttled: 4 attempts in ${bruteMs.toFixed(0)}ms`);
+// ...and the real password still works afterwards; an attacker cannot lock the admin out.
+assert.equal((await post('/api/login', { password: PASSWORD })).status, 200, 'no lockout for the real admin');
+
+// Security headers on every response.
+const headers = (await call('/api/links')).headers;
+assert.equal(headers.get('x-frame-options'), 'DENY', 'clickjacking blocked');
+assert.equal(headers.get('x-content-type-options'), 'nosniff');
+assert.equal(headers.get('referrer-policy'), 'no-referrer', 'share tokens do not leak via Referer');
+assert.match(headers.get('content-security-policy') ?? '', /script-src 'self'/, 'no inline script allowed');
+
+step('auth, login throttling, security headers');
 
 // --- path traversal ----------------------------------------------------------
 for (const bad of ['../..', '/etc', '../../etc', 'photos/../../..']) {
@@ -290,6 +306,46 @@ capped2.db.close();
 fs.rmSync(capDir, { recursive: true, force: true });
 
 step('server-wide speed limit, live-editable');
+
+// --- changing the admin password invalidates open sessions --------------------
+{
+  const rotDir = fs.mkdtempSync(path.join(os.tmpdir(), 'handoff-rotate-'));
+  fs.mkdirSync(path.join(rotDir, 'data'));
+  const cfg = { dataDir: path.join(rotDir, 'data'), libraryDir, adminPassword: 'first-password' };
+
+  const one = createApp(cfg);
+  const s1 = one.app.listen(0);
+  await new Promise((r) => s1.once('listening', r));
+  const p1 = (s1.address() as { port: number }).port;
+  const cookie = (
+    await fetch(`http://127.0.0.1:${p1}/api/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ password: 'first-password' }),
+    })
+  ).headers.getSetCookie()[0].split(';')[0];
+  assert.equal((await fetch(`http://127.0.0.1:${p1}/api/links`, { headers: { cookie } })).status, 200);
+  s1.closeAllConnections();
+  s1.close();
+  one.db.close();
+
+  // Same data directory, new password — the old session cookie must be dead.
+  const two = createApp({ ...cfg, adminPassword: 'second-password' });
+  const s2 = two.app.listen(0);
+  await new Promise((r) => s2.once('listening', r));
+  const p2 = (s2.address() as { port: number }).port;
+  assert.equal(
+    (await fetch(`http://127.0.0.1:${p2}/api/links`, { headers: { cookie } })).status,
+    401,
+    'session survived a password change',
+  );
+  s2.closeAllConnections();
+  s2.close();
+  two.db.close();
+  fs.rmSync(rotDir, { recursive: true, force: true });
+}
+
+step('password rotation kills open sessions');
 
 // --- expiry: owned files deleted, library originals untouched -----------------
 db.prepare('UPDATE links SET expires = ?').run(Date.now() - 1000);

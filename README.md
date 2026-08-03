@@ -132,6 +132,47 @@ One Node process, one SQLite file, no build step. About 400 lines.
   in that pipe. Single ranges only, which is all browsers and download managers send.
 - A sweeper runs every 60 seconds and on boot.
 
+## Security
+
+The whole perimeter is one password, so it's worth being explicit about what protects what.
+
+**Two separate surfaces.** `/api/*` and the web UI require the admin password. The download side
+(`/d/<token>` and `/f/<token>/…`) is deliberately public — that's the point of a share link — and is
+protected by a 96-bit random token, plus an optional per-link password.
+
+**Login is deliberately slow.** The admin password is verified with scrypt, so each attempt costs
+~100ms of CPU rather than a microsecond of string comparison. Consecutive failures add a rising delay
+on top. There is no lockout: an attacker can slow themselves down but can never lock you out of your
+own server. Verification runs off the event loop so a login flood can't stall downloads.
+
+**Sessions are bound to the password.** Changing `ADMIN_PASSWORD` and restarting invalidates every
+session that was already open — if you think it leaked, rotating it actually ends access.
+
+**Headers.** `Content-Security-Policy` with `script-src 'self'` (the UI's JavaScript lives in
+`public/app.js`, nothing inline), `frame-ancestors 'none'` and `X-Frame-Options: DENY` against
+clickjacking, `nosniff`, and `Referrer-Policy: no-referrer` so a share token can't leak through a
+Referer header.
+
+**Cookies** are `HttpOnly`, `SameSite=Lax`, and `Secure` whenever a proxy terminates TLS. `SameSite=Lax`
+is also what makes CSRF tokens unnecessary: cross-site POST/PUT/DELETE never carry the session cookie,
+and no state-changing operation is a GET.
+
+**No injection surface.** Filenames reach the admin UI only through `textContent` and the download page
+only through an HTML escaper. Library paths are resolved with `realpath` and checked against the root,
+so neither `../` nor a symlink escapes. Every SQL statement is prepared with bound parameters.
+
+Known limits, so you can decide if they matter to you:
+
+- Downloads aren't rate-limited by IP or connection count. The server-wide speed cap bounds bandwidth,
+  but a determined party with a valid link can open many connections. Your reverse proxy is the right
+  place to limit that.
+- There's no audit log of who downloaded what, and no second factor.
+- `ADMIN_PASSWORD` arrives as an environment variable, so it's visible to anyone who can run
+  `docker inspect` on your server. That's the normal Unraid pattern, but it is not a secret store.
+- Use a long password. Slow hashing raises the cost of guessing; it doesn't rescue `password1`.
+
+Found something? Open an issue.
+
 ## Development
 
 ```bash
