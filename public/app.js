@@ -7,7 +7,21 @@ const fmt = (n) => {
   while (n >= 1024 && i < u.length - 1) (n /= 1024), i++;
   return `${n < 10 && i > 0 ? n.toFixed(1) : Math.round(n)} ${u[i]}`;
 };
-const when = (ms) => new Date(ms).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
+// null expiry means the link never expires — the server stores that, not the UI.
+// Numeric MM/DD/YY, pinned to en-US: it's the format the column is sized for, and
+// tabular figures only line up if every row spends the same width on the date.
+const when = (ms) =>
+  ms === null
+    ? 'Never'
+    : new Date(ms).toLocaleString('en-US', {
+        month: '2-digit',
+        day: '2-digit',
+        year: '2-digit',
+        // 2-digit hour, so 4:17 PM is exactly as wide as 11:55 AM and the label
+        // beside it doesn't shift from row to row.
+        hour: '2-digit',
+        minute: '2-digit',
+      });
 
 // Extension chip, shown only in the light variant. Text beats an emoji table:
 // no lookup to maintain and it renders identically everywhere.
@@ -34,6 +48,15 @@ const toast = (msg) => {
   t.togglePopover?.(true);
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => t.togglePopover?.(false), 3000);
+};
+
+// The API speaks hours (null = never); the picker speaks minutes/hours/days. The
+// unit <option> carries its own multiplier in minutes, so there's no unit table to
+// keep in sync. An empty count is "no expiry", which is why blank isn't a 400.
+const hoursFrom = (numId, unitId) => {
+  const unit = $(unitId).value;
+  if (unit === 'never' || !$(numId).value) return null;
+  return (Number($(numId).value) * Number(unit)) / 60;
 };
 
 let pick = null; // { source, path?, file?, label }
@@ -115,7 +138,7 @@ $('create').onclick = async () => {
     source: pick.source,
     path: pick.path,
     name: pick.file?.name,
-    hours: Number($('hours').value),
+    hours: hoursFrom('expNum', 'expUnit'),
     password: $('pass').value || undefined,
     maxDownloads: $('max').value || undefined,
   };
@@ -183,29 +206,35 @@ async function refresh() {
     const li = document.createElement('li');
     // Structure via innerHTML, user-controlled text via textContent below.
     li.innerHTML = `<span class="ic"></span>
-      <div class="main"><div class="nm"></div><code class="url"></code></div>
+      <div class="main">
+        <div class="nm"><span class="nmt"></span><span class="sz"></span></div>
+        <code class="url"></code>
+      </div>
       <div class="stats">
-        <div class="stat size"><span class="k">Size</span><span class="v"></span></div>
-        <div class="stat"><span class="k">Expires</span><span class="v"></span></div>
-        <div class="stat"><span class="k">Downloads</span><span class="v"></span></div>
+        <div class="stat exp"><span class="k">Expires</span><span class="v"></span></div>
+        <div class="stat dl"><span class="k">Downloads</span><span class="v"></span></div>
       </div>
       <div class="acts">
         <button type="button" class="btn small dots">⋯</button>
       </div>`;
 
     li.querySelector('.ic').textContent = ext(l.name);
-    li.querySelector('.nm').textContent = l.name;
+    li.querySelector('.nmt').textContent = l.name;
     if (l.locked) {
       const chip = document.createElement('span');
       chip.className = 'chip';
       chip.textContent = 'Password';
-      li.querySelector('.nm').append(' ', chip);
+      // After the size, so the name line reads name → size → chip on every row.
+      li.querySelector('.sz').after(chip);
     }
     li.querySelector('.url').textContent = l.url;
 
-    const [size, expires, downloads] = li.querySelectorAll('.stat .v');
-    size.textContent =
+    // Size sits with the filename, not in a column: it describes the file, and a
+    // column of it can never line up next to a ragged-length name anyway.
+    li.querySelector('.sz').textContent =
       l.status === 'zipping' ? `zipping… ${fmt(l.size)}` : l.status === 'ready' ? fmt(l.size) : l.status;
+
+    const [expires, downloads] = li.querySelectorAll('.stat .v');
     expires.textContent = when(l.expires);
     downloads.textContent = l.maxDownloads ? `${l.downloads} / ${l.maxDownloads}` : l.downloads;
 
@@ -311,10 +340,11 @@ let editing = null;
 function openEdit(l) {
   editing = l;
   $('editName').textContent = l.name;
-  // Blank by default: the expiry only moves if it's explicitly chosen, so raising
-  // a download limit doesn't quietly restart the clock too.
-  $('editHours').value = '';
-  $('editExpiry').textContent = `Currently expires ${when(l.expires)}`;
+  // Blank by default: the expiry only moves if a number is typed (or "never" is
+  // picked), so raising a download limit doesn't quietly restart the clock too.
+  $('editNum').value = '';
+  $('editUnit').value = '1440';
+  $('editExpiry').textContent = l.expires ? `Currently expires ${when(l.expires)}` : 'Currently never expires';
   $('editMax').value = l.maxDownloads ?? '';
   $('editDownloads').textContent = l.downloads
     ? `Downloaded ${l.downloads} ${l.downloads === 1 ? 'time' : 'times'} so far`
@@ -328,7 +358,8 @@ $('editCancel').onclick = () => $('edit').close();
 $('editForm').onsubmit = async (e) => {
   e.preventDefault();
   const body = { maxDownloads: $('editMax').value || null };
-  if ($('editHours').value) body.hours = Number($('editHours').value);
+  // A blank count leaves the expiry alone; "never" removes it outright.
+  if ($('editNum').value || $('editUnit').value === 'never') body.hours = hoursFrom('editNum', 'editUnit');
 
   const r = await api(`/api/links/${editing.token}`, { method: 'PATCH', body: JSON.stringify(body) });
   if (!r.ok) return ($('editErr').textContent = (await r.json()).error ?? 'Could not save');

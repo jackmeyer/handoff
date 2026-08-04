@@ -45,6 +45,9 @@
 /* Columns need every header, including the one the inline form leaves implicit. */
 .stat.size .k { display: block; }
 .stat .v { display: block; font-size: 0.8rem; font-weight: 550; margin-top: 0.1rem; white-space: nowrap; }
+/* Stacked here, so the fixed-width value box has to right-align itself under its
+   header rather than being pushed there by the row's flex. */
+#links .stat .v { margin-left: auto; }
 
 /* Tabs become a segmented control. */
 .tabs {

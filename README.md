@@ -10,7 +10,8 @@ Built for homelabbers who want to offer download links without setting up an ent
 - **Or share a whole folder**, zipped once with no compression. The link works while it's still zipping,
   and deleting it cancels the job.
 - **Or drag a file in** to upload it. Uploads aren't resumable, so put anything huge on the share instead.
-- Links carry an expiry, and optionally a password and a download limit.
+- Links expire after any span you pick — minutes, hours or days — or never, and optionally carry a
+  password and a download limit.
 - **Cap total download bandwidth** so a share can't saturate your uplink.
 - Range requests are supported, so a large download resumes instead of restarting.
 - Expiry deletes the link and anything Handoff created for it. **Your mounted folder is only ever read

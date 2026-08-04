@@ -41,13 +41,15 @@
 
   <div class="opts">
     <div>
-      <label for="hours">Expires after</label>
-      <select id="hours">
-        <option value="24">24 hours</option>
-        <option value="168" selected>7 days</option>
-        <option value="720">30 days</option>
-        <option value="2160">90 days</option>
-      </select>
+      <label for="expNum">Expires after</label>
+      <div class="dur">
+        <input id="expNum" type="number" min="1" step="1" placeholder="Never" />
+        <select id="expUnit" aria-label="Expiry unit">
+          <option value="1">minutes</option>
+          <option value="60">hours</option>
+          <option value="1440" selected>days</option>
+        </select>
+      </div>
     </div>
     <div><label for="pass">Password (optional)</label><input id="pass" type="text" autocomplete="off" /></div>
     <div><label for="max">Download limit (optional)</label><input id="max" type="number" min="1" /></div>
@@ -110,14 +112,16 @@
   <form id="editForm">
     <h2 class="fname" id="editName"></h2>
 
-    <label for="editHours">Expires</label>
-    <select id="editHours">
-      <option value="">Keep current expiry</option>
-      <option value="24">24 hours from now</option>
-      <option value="168">7 days from now</option>
-      <option value="720">30 days from now</option>
-      <option value="2160">90 days from now</option>
-    </select>
+    <label for="editNum">Expires in</label>
+    <div class="dur">
+      <input id="editNum" type="number" min="1" step="1" placeholder="Keep current expiry" />
+      <select id="editUnit" aria-label="Expiry unit">
+        <option value="1">minutes</option>
+        <option value="60">hours</option>
+        <option value="1440" selected>days</option>
+        <option value="never">never</option>
+      </select>
+    </div>
     <p class="hint" id="editExpiry"></p>
 
     <label for="editMax">Download limit</label>

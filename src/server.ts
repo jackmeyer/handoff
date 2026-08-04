@@ -36,6 +36,12 @@ export type Link = {
 
 const MBPS = 125_000; // bytes/sec in one megabit/sec
 
+// "Never expires" is stored as the largest timestamp JS can represent rather than
+// NULL: every comparison (the sweep query, live()) keeps working untouched, and no
+// existing database has to be rebuilt to drop the NOT NULL on expires.
+const NEVER = 8.64e15;
+const never = (expires: number) => expires >= NEVER;
+
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
 const bytes = (n: number) => {
@@ -389,7 +395,8 @@ export function createApp(cfg: Config) {
         name: l.name,
         size: liveSize(l),
         status: l.status,
-        expires: l.expires,
+        // null, not the sentinel: the UI shouldn't have to know how "never" is stored.
+        expires: never(l.expires) ? null : l.expires,
         downloads: l.downloads,
         maxDownloads: l.maxDownloads,
         locked: Boolean(l.pw),
@@ -398,10 +405,22 @@ export function createApp(cfg: Config) {
     );
   });
 
+  /** null means never. The key has to be present either way — an omitted expiry on
+   *  a link-expiry app should be a 400, not a permanent link by accident. */
+  const readHours = (b: Record<string, unknown>): number | null | undefined => {
+    if (!('hours' in b)) return undefined;
+    const raw = b.hours;
+    if (raw === null || raw === '') return null;
+    const hours = Number(raw);
+    return Number.isFinite(hours) && hours > 0 ? hours : undefined;
+  };
+
+  const at = (hours: number | null) => (hours === null ? NEVER : Date.now() + Math.round(hours * 3600e3));
+
   app.post('/api/links', requireAdmin, (req, res) => {
     const b = req.body ?? {};
-    const hours = Number(b.hours);
-    if (!Number.isFinite(hours) || hours <= 0) return res.status(400).json({ error: 'Bad expiry' });
+    const hours = readHours(b);
+    if (hours === undefined) return res.status(400).json({ error: 'Bad expiry' });
 
     const maxDownloads = b.maxDownloads ? Number(b.maxDownloads) : null;
     if (maxDownloads !== null && (!Number.isInteger(maxDownloads) || maxDownloads < 1)) {
@@ -410,7 +429,7 @@ export function createApp(cfg: Config) {
 
     const token = randomBytes(12).toString('base64url');
     const pw = b.password ? hashPw(String(b.password)) : null;
-    const expires = Date.now() + hours * 3600e3;
+    const expires = at(hours);
     const row = (name: string, filePath: string, owned: number, size: number, status: Link['status']) =>
       q.insert.run(token, name, filePath, owned, size, pw, status, expires, maxDownloads, Date.now());
 
@@ -472,9 +491,9 @@ export function createApp(cfg: Config) {
     // Absent means "leave alone", so the admin can raise a limit without also
     // silently resetting the expiry clock.
     if ('hours' in b) {
-      const hours = Number(b.hours);
-      if (!Number.isFinite(hours) || hours <= 0) return res.status(400).json({ error: 'Bad expiry' });
-      expires = Date.now() + hours * 3600e3;
+      const hours = readHours(b);
+      if (hours === undefined) return res.status(400).json({ error: 'Bad expiry' });
+      expires = at(hours);
     }
 
     if ('maxDownloads' in b) {
@@ -576,7 +595,7 @@ export function createApp(cfg: Config) {
       );
     }
 
-    const meta = `<div class=stats>${stat('Size', bytes(l.size), 'size')}${stat('Expires', on(l.expires))}</div>`;
+    const meta = `<div class=stats>${stat('Size', bytes(l.size), 'size')}${stat('Expires', never(l.expires) ? 'Never' : on(l.expires))}</div>`;
 
     if (l.pw && unsign(SECRET, cookies(req)[`u_${l.token}`]) !== l.token) {
       return res.type('html').send(
@@ -595,7 +614,7 @@ export function createApp(cfg: Config) {
         l.name,
         `${head(l, 'Shared with you')}${meta}
          <a class="btn primary" href="/f/${l.token}/${encodeURIComponent(l.name)}" download>Download</a>
-         <p class=note>Access ends ${esc(on(l.expires, true))}.</p>`,
+         <p class=note>${never(l.expires) ? 'This link has no expiry date.' : `Access ends ${esc(on(l.expires, true))}.`}</p>`,
       ),
     );
   });

@@ -71,6 +71,11 @@ input:focus-visible, select:focus-visible, .btn:focus-visible {
 }
 label { display: block; font-size: 0.76rem; color: var(--dim); margin-bottom: 0.25rem; }
 
+/* Duration picker: a count and its unit read as one control. */
+.dur { display: flex; gap: 0.4rem; }
+.dur input { flex: 1 1 4rem; min-width: 0; }
+.dur select { flex: 0 0 auto; width: auto; }
+
 .hide { display: none !important; }
 
 .sect { font-size: 0.74rem; color: var(--dim); margin: 1.5rem 0 0.55rem; }
@@ -102,6 +107,9 @@ label { display: block; font-size: 0.76rem; color: var(--dim); margin-bottom: 0.
   border: 1px solid var(--line);
   color: var(--dim);
   vertical-align: 0.1em;
+  /* Its border and padding would otherwise make a chipped row a pixel taller than
+     the rest of the list. */
+  line-height: 1;
 }
 
 /* ---- stats --------------------------------------------------------------- */
@@ -219,12 +227,32 @@ ul { list-style: none; margin: 0; padding: 0; }
 }
 .acts { flex: none; display: flex; gap: 0.35rem; }
 
+/* The fixed width lives on the value, not the column: the label then sits right
+   beside its value with a normal word space, and every row still shares one right
+   edge per column because the value box is the same width in all of them. Putting
+   it on the column instead is what pushed "downloads" and "0" to opposite ends.
+   Scoped to #links — the recipient card centres its stats instead.
+   flex: none overrides dark.css's flex: 1, which would otherwise ignore width. */
+#links .stats { flex: none; gap: 0 1.1rem; }
+#links .stat { flex: none; justify-content: flex-end; }
+#links .stat .v { width: var(--col); text-align: right; white-space: nowrap; }
+#links .stat.exp { --col: 9rem; }
+#links .stat.dl { --col: 2.4rem; }
+/* The columns do the separating now. */
+#links .stat + .stat::before { content: none; }
+
+/* Size belongs to the file, so it rides with the name instead of being a column. */
+.nm { display: flex; align-items: baseline; gap: 0.4rem; flex-wrap: wrap; }
+.nmt { min-width: 0; overflow-wrap: anywhere; }
+.sz { font-size: 0.78rem; font-weight: 400; color: var(--dim); font-variant-numeric: tabular-nums; }
+
 .empty { color: var(--dim); font-size: 0.86rem; padding: 0.4rem 0; }
 
 /* On a phone the stat columns have no room to be columns. */
 @media (max-width: 34rem) {
   #links li { flex-wrap: wrap; }
   .stats { width: 100%; }
+  #links .stats .stat { width: auto; flex: 1 1 auto; }
 }
 
 /* ---- settings ------------------------------------------------------------ */

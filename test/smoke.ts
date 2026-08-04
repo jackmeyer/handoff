@@ -261,6 +261,14 @@ assert.equal(suicide.status, 400, 'limit at or below the count refused');
 assert.match(((await suicide.json()) as { error: string }).error, /already downloaded/i, 'refusal says why');
 assert.ok(await readLink(), 'refused edit left the link alive');
 
+// The UI's minute picker sends a fraction of an hour, which has to land as a whole
+// millisecond — the expires column is an INTEGER.
+const nowish = Date.now();
+assert.equal((await patch({ hours: 5 / 60 })).status, 200, 'sub-hour expiry accepted');
+const minutes = (await readLink()).expires;
+assert.ok(Number.isInteger(minutes), 'fractional hours stored as whole milliseconds');
+assert.ok(Math.abs(minutes - (nowish + 300_000)) < 2000, 'five minutes landed five minutes out');
+
 assert.equal((await patch({ hours: 0 })).status, 400, 'zero expiry refused');
 assert.equal((await patch({ maxDownloads: 2.5 })).status, 400, 'fractional limit refused');
 assert.equal((await call('/api/links/nope', { method: 'PATCH', body: '{}' })).status, 404, 'unknown token 404s');
@@ -428,6 +436,33 @@ step('deployment theme, and settings save independently');
 }
 
 step('password rotation kills open sessions');
+
+// --- links with no expiry -----------------------------------------------------
+// Stored as a sentinel rather than NULL, so the thing worth proving is that the
+// sweep leaves it alone and that nobody ever sees the year-275760 date.
+const forever = await mkLink({ source: 'library', path: 'notes.txt', hours: null });
+const foreverRow = async () =>
+  ((await (await call('/api/links')).json()) as { token: string; expires: number | null }[]).find(
+    (l) => l.token === forever.token,
+  );
+assert.equal((await foreverRow())!.expires, null, 'no-expiry link reports null, not a sentinel');
+sweep();
+assert.ok(await foreverRow(), 'sweep left the no-expiry link alone');
+assert.match(await (await fetch(`${base}/d/${forever.token}`)).text(), /Never/, 'download page says Never');
+
+assert.equal(
+  (await post('/api/links', { source: 'library', path: 'notes.txt' })).status,
+  400,
+  'omitted expiry is refused, not treated as never',
+);
+
+// Expiry can be removed from, and put back on, a link that already exists.
+assert.equal((await patch({ hours: null })).status, 200, 'expiry removed from a live link');
+assert.equal((await readLink()).expires, null, 'removal persisted');
+assert.equal((await patch({ hours: 1 })).status, 200, 'expiry put back');
+assert.ok((await readLink()).expires! > Date.now(), 'restored expiry is in the future');
+
+step('links can have no expiry at all');
 
 // --- expiry: owned files deleted, library originals untouched -----------------
 db.prepare('UPDATE links SET expires = ?').run(Date.now() - 1000);
