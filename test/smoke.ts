@@ -277,6 +277,14 @@ const capped = await mkLink({ source: 'library', path: 'notes.txt', maxDownloads
 assert.equal((await fetch(`${base}/f/${capped.token}/notes.txt`)).status, 200, 'first download allowed');
 assert.equal((await fetch(`${base}/f/${capped.token}/notes.txt`)).status, 404, 'second download refused');
 
+// 0 used to fall through a falsiness check and mean "no limit" — a link nobody can
+// download is nonsense, so it must be refused, and on create just like on edit.
+assert.equal(
+  (await post('/api/links', { source: 'library', path: 'notes.txt', hours: 1, maxDownloads: 0 })).status,
+  400,
+  'zero download limit refused on create',
+);
+
 step('download limit');
 
 // --- range edge cases --------------------------------------------------------

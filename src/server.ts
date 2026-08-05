@@ -454,9 +454,11 @@ export function createApp(cfg: Config) {
     res.json({ path: path.relative(LIB, dir), hasParent: dir !== LIB, entries });
   });
 
+  const baseUrl = (req: Request) => cfg.publicUrl?.replace(/\/+$/, '') ?? `${req.protocol}://${req.get('host')}`;
+
   app.get('/api/links', requireAdmin, (req, res) => {
     sweep();
-    const base = cfg.publicUrl?.replace(/\/+$/, '') ?? `${req.protocol}://${req.get('host')}`;
+    const base = baseUrl(req);
     res.json(
       (q.all.all() as Link[]).map((l) => ({
         token: l.token,
@@ -485,15 +487,21 @@ export function createApp(cfg: Config) {
 
   const at = (hours: number | null) => (hours === null ? NEVER : Date.now() + Math.round(hours * 3600e3));
 
+  /** null means no limit; undefined means invalid (0 included — a link nobody can
+   *  download is a delete wearing a create's clothes). */
+  const readMaxDownloads = (raw: unknown): number | null | undefined => {
+    if (raw === null || raw === undefined || raw === '') return null;
+    const n = Number(raw);
+    return Number.isInteger(n) && n >= 1 ? n : undefined;
+  };
+
   app.post('/api/links', requireAdmin, (req, res) => {
     const b = req.body ?? {};
     const hours = readHours(b);
     if (hours === undefined) return res.status(400).json({ error: 'Bad expiry' });
 
-    const maxDownloads = b.maxDownloads ? Number(b.maxDownloads) : null;
-    if (maxDownloads !== null && (!Number.isInteger(maxDownloads) || maxDownloads < 1)) {
-      return res.status(400).json({ error: 'Bad download limit' });
-    }
+    const maxDownloads = readMaxDownloads(b.maxDownloads);
+    if (maxDownloads === undefined) return res.status(400).json({ error: 'Bad download limit' });
 
     const token = randomBytes(12).toString('base64url');
     const pw = b.password ? hashPw(String(b.password)) : null;
@@ -522,8 +530,7 @@ export function createApp(cfg: Config) {
       return res.status(400).json({ error: 'Bad source' });
     }
 
-    const base = cfg.publicUrl?.replace(/\/+$/, '') ?? `${req.protocol}://${req.get('host')}`;
-    res.json({ token, url: `${base}/d/${token}` });
+    res.json({ token, url: `${baseUrl(req)}/d/${token}` });
   });
 
   app.put('/api/upload/:token', requireAdmin, async (req, res) => {
@@ -565,11 +572,9 @@ export function createApp(cfg: Config) {
     }
 
     if ('maxDownloads' in b) {
-      const raw = b.maxDownloads;
-      maxDownloads = raw === null || raw === undefined || raw === '' ? null : Number(raw);
-      if (maxDownloads !== null && (!Number.isInteger(maxDownloads) || maxDownloads < 1)) {
-        return res.status(400).json({ error: 'Bad download limit' });
-      }
+      const limit = readMaxDownloads(b.maxDownloads);
+      if (limit === undefined) return res.status(400).json({ error: 'Bad download limit' });
+      maxDownloads = limit;
       // A limit at or below the count already reached kills the link on the next
       // sweep, taking any uploaded file with it. That's a delete wearing an edit's
       // clothes, so make it be asked for explicitly.
@@ -624,6 +629,9 @@ export function createApp(cfg: Config) {
   const head = (l: Link, kicker: string) =>
     `<p class=kicker>${kicker}</p><div class=ic>${ext(l.name)}</div><h1 class=fname>${esc(l.name)}</h1>`;
 
+  const locked = (req: Request, l: Link) =>
+    Boolean(l.pw) && unsign(SECRET, cookies(req)[`u_${l.token}`]) !== l.token;
+
   app.get('/d/:token', (req, res) => {
     const l = live(req.params.token);
     // Expired and never-existed are deliberately the same page: telling a stranger
@@ -665,7 +673,7 @@ export function createApp(cfg: Config) {
 
     const meta = `<div class=stats>${stat('Size', bytes(l.size), 'size')}${stat('Expires', never(l.expires) ? 'Never' : on(l.expires))}</div>`;
 
-    if (l.pw && unsign(SECRET, cookies(req)[`u_${l.token}`]) !== l.token) {
+    if (locked(req, l)) {
       return res.type('html').send(
         page(
           l.name,
@@ -715,7 +723,7 @@ export function createApp(cfg: Config) {
   app.get('/f/:token/:name', (req, res) => {
     const l = live(String(req.params.token));
     if (!l || l.status !== 'ready') return res.status(404).type('text').send('Expired');
-    if (l.pw && unsign(SECRET, cookies(req)[`u_${l.token}`]) !== l.token) return res.redirect(303, `/d/${l.token}`);
+    if (locked(req, l)) return res.redirect(303, `/d/${l.token}`);
 
     let stat: fs.Stats;
     try {
