@@ -7,6 +7,7 @@
  */
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { createApp } from '../src/server.ts';
@@ -23,6 +24,13 @@ fs.mkdirSync(path.join(libraryDir, 'photos'), { recursive: true });
 // 1 MiB, big enough to time a speed limit against.
 fs.writeFileSync(path.join(libraryDir, 'rate.bin'), Buffer.alloc(1 << 20, 9));
 
+// Planted by "someone else with write access to the share", for the zip check below.
+const outside = path.join(tmp, 'outside-secret.txt');
+fs.writeFileSync(outside, 'DO-NOT-LEAK');
+fs.symlinkSync(outside, path.join(libraryDir, 'escape'));
+fs.mkdirSync(path.join(libraryDir, 'trap'));
+fs.symlinkSync(outside, path.join(libraryDir, 'trap', 'innocent.txt'));
+
 const original = path.join(libraryDir, 'notes.txt');
 fs.writeFileSync(original, 'abcdefghij');
 fs.writeFileSync(path.join(libraryDir, 'photos', 'a.txt'), 'one');
@@ -35,10 +43,24 @@ for (let i = 0; i < 8; i++) {
 }
 
 const PASSWORD = 'correct-horse';
-const { app, db, sweep } = createApp({ dataDir, libraryDir, adminPassword: PASSWORD });
+// trustProxy so the throttle checks below can present distinct client IPs.
+const { app, db, sweep } = createApp({ dataDir, libraryDir, adminPassword: PASSWORD, trustProxy: true });
 const server = app.listen(0);
 await new Promise((r) => server.once('listening', r));
-const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+const port = (server.address() as { port: number }).port;
+const base = `http://127.0.0.1:${port}`;
+
+// fetch() treats Host as a forbidden header and drops it, so anything checking Host
+// handling has to go out over a raw request or it silently tests nothing.
+const statusWithHost = (host: string, path: string) =>
+  new Promise<number>((resolve, reject) => {
+    const r = http.request({ host: '127.0.0.1', port, path, headers: { host, cookie: sess } }, (res) => {
+      res.resume();
+      resolve(res.statusCode!);
+    });
+    r.on('error', reject);
+    r.end();
+  });
 
 let sess = '';
 const call = (url: string, opts: RequestInit = {}) =>
@@ -57,8 +79,17 @@ const mkLink = async (body: Record<string, unknown>) => {
 };
 
 // --- auth --------------------------------------------------------------------
+// Each of these presents its own client IP, because a wrong guess now gates the IP
+// that made it — sharing one would have the checks throttling each other.
+const from = (ip: string, password: string) =>
+  fetch(`${base}/api/login`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-forwarded-for': ip },
+    body: JSON.stringify({ password }),
+  });
+
 assert.equal((await call('/api/links')).status, 401, 'links require auth');
-assert.equal((await post('/api/login', { password: 'nope' })).status, 401, 'wrong password rejected');
+assert.equal((await from('192.0.2.1', 'nope')).status, 401, 'wrong password rejected');
 
 const login = await post('/api/login', { password: PASSWORD });
 assert.equal(login.status, 200, 'correct password accepted');
@@ -66,14 +97,23 @@ sess = grabCookie(login);
 assert.ok(sess.startsWith('sess='), 'session cookie issued');
 assert.equal((await call('/api/links')).status, 200, 'session works');
 
-// Wrong passwords get progressively slower, so an exposed login endpoint can't
-// be hammered at network speed.
-const bruteStart = performance.now();
-for (let i = 0; i < 4; i++) assert.equal((await post('/api/login', { password: 'nope' })).status, 401);
-const bruteMs = performance.now() - bruteStart;
-assert.ok(bruteMs > 500, `failed logins were not throttled: 4 attempts in ${bruteMs.toFixed(0)}ms`);
-// ...and the real password still works afterwards; an attacker cannot lock the admin out.
-assert.equal((await post('/api/login', { password: PASSWORD })).status, 200, 'no lockout for the real admin');
+// A wrong password shuts the door on that IP for a moment. Fire the guesses in
+// PARALLEL: the bug this guards is that an awaited delay only slows the request
+// doing the awaiting, so a burst used to sleep concurrently and get through whole.
+const burst = await Promise.all(Array.from({ length: 50 }, (_, i) => from('203.0.113.5', `nope${i}`)));
+const landed = burst.filter((r) => r.status === 401).length;
+assert.ok(landed <= 2, `parallel brute force got through: ${landed} of 50 guesses were actually checked`);
+assert.ok(
+  burst.some((r) => r.status === 429),
+  'excess guesses must be refused outright, not queued behind a sleep',
+);
+
+// Sequential guesses from one IP are gated too, not merely counted.
+assert.equal((await from('203.0.113.5', 'nope')).status, 429, 'the gate stays shut while the delay runs');
+
+// ...and one attacker must never lock the real admin out. That is why the throttle
+// is keyed per IP: a global one would let anyone hold the door shut.
+assert.equal((await from('198.51.100.9', PASSWORD)).status, 200, 'a different IP is unaffected');
 
 // Security headers on every response.
 const headers = (await call('/api/links')).headers;
@@ -92,11 +132,28 @@ for (const bad of ['../..', '/etc', '../../etc', 'photos/../../..']) {
 const listing = (await (await call('/api/browse?p=')).json()) as { entries: { name: string }[] };
 assert.deepEqual(
   listing.entries.map((e) => e.name),
-  ['big', 'photos', 'notes.txt', 'rate.bin'],
+  ['big', 'photos', 'trap', 'escape', 'notes.txt', 'rate.bin'],
   'directories sort first',
 );
 
+// A symlink inside the library must not smuggle its target out. inLibrary() realpaths
+// and would reject this path outright — but zipping walks the tree itself, so without
+// -y the archive quietly contains whatever the link points at. The shared folder is
+// writable by other people on the LAN, so planting one is not a privileged act.
+assert.equal((await call('/api/browse?p=escape')).status, 400, 'a symlink out of the library is not browsable');
+
 step('path traversal blocked');
+
+// --- DNS rebinding -------------------------------------------------------------
+// A rebound request still carries the attacker's hostname, which is what makes
+// pinning Host the defence. Bare IPs stay allowed — that is how a LAN box is opened.
+assert.equal(await statusWithHost('evil.example.com', '/api/links'), 403, 'foreign Host rejected');
+assert.equal(await statusWithHost(`127.0.0.1:${port}`, '/api/links'), 200, 'bare IP still allowed');
+assert.equal(await statusWithHost(`localhost:${port}`, '/api/links'), 200, 'localhost still allowed');
+// The recipient-facing side is behind the same guard — rebinding must not reach it.
+assert.equal(await statusWithHost('evil.example.com', '/healthz'), 403, 'foreign Host rejected everywhere');
+
+step('DNS rebinding blocked by Host pinning');
 
 // --- library file: range request + original is never touched -------------------
 const fileLink = await mkLink({ source: 'library', path: 'notes.txt' });
@@ -132,19 +189,29 @@ step('upload round-trip');
 // --- per-link password -------------------------------------------------------
 const locked = await mkLink({ source: 'library', path: 'notes.txt', password: 'hunter2' });
 assert.equal((await fetch(`${base}/f/${locked.token}/notes.txt`, { redirect: 'manual' })).status, 303, 'locked file gated');
-const wrong = await fetch(`${base}/d/${locked.token}`, {
-  method: 'POST',
-  redirect: 'manual',
-  headers: { 'content-type': 'application/x-www-form-urlencoded' },
-  body: 'password=guess',
-});
+// Per IP, like the admin login, so these each present their own.
+const unlockAs = (ip: string, password: string) =>
+  fetch(`${base}/d/${locked.token}`, {
+    method: 'POST',
+    redirect: 'manual',
+    headers: { 'content-type': 'application/x-www-form-urlencoded', 'x-forwarded-for': ip },
+    body: `password=${password}`,
+  });
+
+const wrong = await unlockAs('192.0.2.10', 'guess');
 assert.match(wrong.headers.get('location')!, /bad=1/, 'wrong link password rejected');
-const right = await fetch(`${base}/d/${locked.token}`, {
-  method: 'POST',
-  redirect: 'manual',
-  headers: { 'content-type': 'application/x-www-form-urlencoded' },
-  body: 'password=hunter2',
-});
+
+// This endpoint needs no session at all, so it is the softest brute-force target in
+// the app: anyone holding the link can grind it. It gets the same gate as the login.
+const linkBurst = await Promise.all(Array.from({ length: 30 }, (_, i) => unlockAs('192.0.2.11', `guess${i}`)));
+const checked = linkBurst.filter((r) => /bad=1/.test(r.headers.get('location') ?? '')).length;
+assert.ok(checked <= 2, `link password brute force got through: ${checked} of 30 guesses were checked`);
+assert.ok(
+  linkBurst.some((r) => /slow=1/.test(r.headers.get('location') ?? '')),
+  'throttled unlock attempts are refused',
+);
+
+const right = await unlockAs('192.0.2.12', 'hunter2');
 const unlock = grabCookie(right);
 assert.ok(unlock.startsWith(`u_${locked.token}=`), 'unlock cookie issued');
 const opened = await fetch(`${base}/f/${locked.token}/notes.txt`, { headers: { cookie: unlock } });
@@ -180,6 +247,14 @@ assert.ok(zipBytes.includes(Buffer.from('one')) && zipBytes.includes(Buffer.from
 
 // The originals are still there after we archived them.
 assert.equal(fs.readFileSync(path.join(libraryDir, 'photos', 'a.txt'), 'utf8'), 'one', 'zipping did not move the source');
+
+// The planted symlink has to be stored AS a link. Without -y, zip archives the bytes
+// it points at, and the containment inLibrary() enforces everywhere else is bypassed
+// by the one code path that walks the tree on its own.
+const trapLink = await mkLink({ source: 'library', path: 'trap' });
+assert.equal((await untilReady(trapLink.token)).status, 'ready', 'trap folder zipped');
+const trapBytes = Buffer.from(await (await fetch(`${base}/f/${trapLink.token}/trap.zip`)).arrayBuffer());
+assert.ok(!trapBytes.includes(Buffer.from('DO-NOT-LEAK')), 'zip followed a symlink out of the library');
 
 // Deleting a link mid-zip must cancel the job and take the partial archive with it.
 const doomed = await mkLink({ source: 'library', path: 'big' });

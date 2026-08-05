@@ -18,6 +18,12 @@ export type Config = {
   publicUrl?: string;
   /** Seeds the server-wide speed limit on first boot only; the UI owns it after that. */
   maxMbps?: number;
+  /** Only set this when a reverse proxy really is in front: it makes X-Forwarded-For
+   *  authoritative for req.ip, which the login throttle keys on. Left off, any client
+   *  could spoof the header and get a fresh throttle bucket per request. */
+  trustProxy?: boolean | string;
+  /** Extra Host values to accept, beyond publicUrl, localhost and bare IPs. */
+  allowedHosts?: string[];
 };
 
 export type Link = {
@@ -144,6 +150,30 @@ export function createApp(cfg: Config) {
     return timingSafeEqual(Buffer.from(want, 'hex'), await derive(pw, Buffer.from(salt, 'hex'), 32));
   };
 
+  // ---- password-guess throttle ---------------------------------------------
+  // Refusing early beats sleeping. `await setTimeout` only delays the request
+  // doing the awaiting, so N guesses fired in parallel all sleep at the same time
+  // and all get through — 200 concurrent guesses cost about as long as one.
+  // A gate that rejects has no such bypass: the attacker's next attempt is refused
+  // outright until the delay has actually elapsed.
+  //
+  // Keyed per IP, not globally, because a global gate is a lockout: whoever is
+  // hammering the endpoint would hold the door shut on the real admin. Per IP an
+  // attacker only ever throttles themselves.
+  const guesses = new Map<string, { n: number; until: number }>();
+
+  const who = (req: Request) => req.ip ?? req.socket.remoteAddress ?? '?';
+  const blocked = (key: string) => (guesses.get(key)?.until ?? 0) > Date.now();
+
+  const missed = (key: string) => {
+    const g = guesses.get(key) ?? { n: 0, until: 0 };
+    g.n++;
+    g.until = Date.now() + Math.min(g.n * 250, 5000);
+    guesses.set(key, g);
+  };
+
+  const tooMany = { error: 'Too many attempts — wait a few seconds and try again' };
+
   // ---- library path containment -------------------------------------------
   /** Resolve a library-relative path, or null if it escapes the library root. */
   const inLibrary = (p: string): string | null => {
@@ -234,6 +264,11 @@ export function createApp(cfg: Config) {
 
   const sweep = () => {
     for (const l of q.dead.all(Date.now()) as Link[]) remove(l);
+    // An IP that has been quiet for an hour is forgotten, so the map can't grow
+    // without bound. The backoff caps at 5s regardless, so there is nothing worth
+    // waiting an hour to reset.
+    const stale = Date.now() - 3600e3;
+    for (const [key, g] of guesses) if (g.until < stale) guesses.delete(key);
   };
 
   /** Archive size grows as zip works; report the partial size so the UI can tick. */
@@ -250,7 +285,10 @@ export function createApp(cfg: Config) {
     fs.mkdirSync(path.dirname(out), { recursive: true });
     // ponytail: store-only (-0). Photos and video are already compressed, so
     // deflate buys ~nothing and costs hours on 40GB. Use -1 if you ever zip text.
-    const p = spawn('zip', ['-r', '-0', '-q', out, path.basename(src)], {
+    // -y stores symlinks as links. Without it zip archives what they point AT,
+    // which walks straight past inLibrary()'s containment: anyone who can write to
+    // the shared folder could plant a link to / and read the host out of the zip.
+    const p = spawn('zip', ['-r', '-0', '-q', '-y', out, path.basename(src)], {
       cwd: path.dirname(src),
       stdio: 'ignore',
     });
@@ -270,9 +308,39 @@ export function createApp(cfg: Config) {
 
   // ---- app -----------------------------------------------------------------
   const app = express();
-  app.set('trust proxy', true);
+  app.set('trust proxy', cfg.trustProxy ?? false);
   app.set('x-powered-by', false);
   app.use(express.json({ limit: '1mb' }));
+
+  // ---- DNS rebinding -------------------------------------------------------
+  // An attacker's page on a 1-second-TTL domain re-resolves that domain to this
+  // server's LAN address. The browser then treats their script as same-origin with
+  // Handoff, and SameSite, CORS and the CSP all stop applying — their JS can just
+  // read /api/links and browse the library. Pinning the Host header is the fix:
+  // the rebound request still carries the attacker's hostname, not ours.
+  //
+  // Bare IPs are safe to accept for exactly that reason — a browser only sends an
+  // IP in Host when the user typed one, which is how this gets opened on a LAN.
+  const hostname = (h: string) => h.toLowerCase().replace(/:\d+$/, '');
+  const isIp = (h: string) => /^\[[0-9a-f:.]+\]$/i.test(h) || /^\d{1,3}(\.\d{1,3}){3}$/.test(h);
+
+  const allowedHosts = new Set(
+    [cfg.publicUrl, ...(cfg.allowedHosts ?? [])]
+      .flatMap((v) => {
+        if (!v) return [];
+        // Accept a bare host or a full URL in either field.
+        const host = v.includes('://') ? URL.parse(v)?.host : v;
+        return host ? [host.toLowerCase(), hostname(host)] : [];
+      })
+      .filter(Boolean),
+  );
+
+  app.use((req, res, next) => {
+    const raw = (req.headers.host ?? '').toLowerCase();
+    const bare = hostname(raw);
+    if (!raw || isIp(bare) || bare === 'localhost' || allowedHosts.has(raw) || allowedHosts.has(bare)) return next();
+    res.status(403).type('text').send('Bad host');
+  });
 
   app.use((_req, res, next) => {
     res.set({
@@ -294,17 +362,17 @@ export function createApp(cfg: Config) {
     res.status(401).json({ error: 'Not signed in' });
   };
 
-  // Progressive delay rather than lockout: a brute force slows to a crawl, but an
-  // attacker can never lock the real admin out of their own server.
-  let failures = 0;
-
   app.post('/api/login', async (req, res) => {
+    const key = `admin:${who(req)}`;
+    if (blocked(key)) return res.status(429).json(tooMany);
+    // Count on the way in, not on the way out. Deriving takes ~100ms, and counting
+    // after it would leave the gate open for every guess that arrives while the
+    // first one is still hashing — which is the whole parallel burst.
+    missed(key);
+
     const attempt = await derive(String(req.body?.password ?? ''), SECRET, 32);
-    if (!timingSafeEqual(attempt, adminHash)) {
-      await new Promise((r) => setTimeout(r, Math.min(++failures * 250, 5000)));
-      return res.status(401).json({ error: 'Wrong password' });
-    }
-    failures = 0;
+    if (!timingSafeEqual(attempt, adminHash)) return res.status(401).json({ error: 'Wrong password' });
+    guesses.delete(key);
     const until = Date.now() + 7 * 864e5;
     res.cookie('sess', sign(sessionKey, String(until)), {
       httpOnly: true,
@@ -604,6 +672,7 @@ export function createApp(cfg: Config) {
           `${head(l, 'Password required')}${meta}
            <form method=post><input type=password name=password placeholder="Password" autofocus required>
            <button class="btn primary">Unlock</button></form>
+           ${req.query.slow ? '<p class=err>Too many attempts. Wait a few seconds, then try again.</p>' : ''}
            ${req.query.bad ? '<p class=err>That password didn’t work. Try again.</p>' : ''}`,
         ),
       );
@@ -622,9 +691,18 @@ export function createApp(cfg: Config) {
   app.post('/d/:token', express.urlencoded({ extended: false, limit: '4kb' }), async (req, res) => {
     const l = live(String(req.params.token));
     if (!l?.pw) return res.redirect(303, `/d/${req.params.token}`);
+
+    // Same gate as the admin login. This endpoint needs no session at all, so
+    // without it anyone holding a share link can grind its password flat out —
+    // and these are short passwords, typed by hand and sent over text.
+    const key = `link:${l.token}:${who(req)}`;
+    if (blocked(key)) return res.redirect(303, `/d/${l.token}?slow=1`);
+    missed(key); // before the derive, same reason as the admin login above
+
     if (!(await checkPw(String(req.body?.password ?? ''), l.pw))) {
       return res.redirect(303, `/d/${l.token}?bad=1`);
     }
+    guesses.delete(key);
     res.cookie(`u_${l.token}`, sign(SECRET, l.token), {
       httpOnly: true,
       sameSite: 'lax',
@@ -708,6 +786,13 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     adminPassword,
     publicUrl: process.env.PUBLIC_URL || undefined,
     maxMbps: process.env.MAX_MBPS ? Number(process.env.MAX_MBPS) : undefined,
+    // Set TRUST_PROXY=1 only when a reverse proxy terminates TLS in front of this.
+    // It is what restores req.secure (so session cookies get the Secure flag) and
+    // the caller's real IP for the login throttle.
+    trustProxy: process.env.TRUST_PROXY ? true : false,
+    allowedHosts: process.env.ALLOWED_HOSTS?.split(',')
+      .map((h) => h.trim())
+      .filter(Boolean),
   });
   sweep();
   setInterval(sweep, 60_000).unref?.();

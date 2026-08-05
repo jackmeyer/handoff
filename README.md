@@ -44,8 +44,19 @@ docker run -d --name handoff -p 8080:8080 \
 
 ## Behind a reverse proxy
 
-Handoff speaks plain HTTP and expects a proxy in front (SWAG, NPM, Traefik, Cloudflare Tunnel). For
-nginx, the defaults will spool large transfers through your proxy's disk:
+Handoff speaks plain HTTP and expects a proxy in front (SWAG, NPM, Traefik, Cloudflare Tunnel).
+
+**Set two things, or Handoff will refuse the request:**
+
+- `PUBLIC_URL` (or `ALLOWED_HOSTS`) — Handoff only answers to hostnames it has been told about, plus
+  bare IPs and `localhost`. Reaching it by any other name returns `403 Bad host`. That's the DNS
+  rebinding guard: without it, any web page you visit can re-point its own domain at your LAN address
+  and script the admin API as if it were same-origin.
+- `TRUST_PROXY=1` — tells Handoff the `X-Forwarded-*` headers in front of it are real, which restores
+  `Secure` on session cookies and gives the login throttle the caller's actual IP. Leave it **off**
+  when nothing is proxying, or anyone could forge those headers.
+
+For nginx, the defaults will spool large transfers through your proxy's disk:
 
 ```nginx
 client_max_body_size 0;       # browser uploads
@@ -71,7 +82,9 @@ value on first boot; the settings panel owns it afterwards.
 | `PORT` | `8080` | HTTP port |
 | `DATA_DIR` | `/data` | Database, browser uploads, generated archives |
 | `LIBRARY_DIR` | `/library` | Read-only folder to browse. Absent → the browse tab is hidden |
-| `PUBLIC_URL` | — | Base URL for generated links. Falls back to the request's host |
+| `PUBLIC_URL` | — | Base URL for generated links, and an accepted `Host`. Falls back to the request's host |
+| `ALLOWED_HOSTS` | — | Extra comma-separated hostnames to accept, beyond `PUBLIC_URL` |
+| `TRUST_PROXY` | off | Set to `1` only when a reverse proxy is really in front. See above |
 | `MAX_MBPS` | — | Seeds the speed limit on first boot only |
 | `PUID` / `PGID` / `UMASK` | `99` / `100` / `022` | Standard Unraid ownership |
 
@@ -80,15 +93,28 @@ value on first boot; the settings panel owns it afterwards.
 The admin password protects `/api/*` and the web UI. Share links are public by design, protected by a
 96-bit random token plus an optional per-link password.
 
-Login is scrypt-derived with a rising delay after repeated failures and no lockout, so a brute force
-slows to a crawl but can't lock you out. Sessions are bound to the password, so rotating
-`ADMIN_PASSWORD` ends any that were already open. Cookies are `HttpOnly` and `SameSite=Lax`, plus
-`Secure` behind TLS. CSP, `X-Frame-Options`, `nosniff`, and `Referrer-Policy: no-referrer` are set on
-every response.
+Passwords are scrypt-derived. After a wrong guess, that client's IP is refused outright for a rising
+delay (250ms up to 5s) rather than made to wait — a delay you wait out only slows the one request
+making it, so guesses fired in parallel would otherwise all land at once. The gate is keyed per IP, so
+someone hammering the endpoint throttles themselves and can never lock you out of your own server. The
+same gate covers per-link passwords, which need no session and are otherwise the easiest thing here to
+grind.
+
+Handoff answers only to hostnames it knows (`PUBLIC_URL`, `ALLOWED_HOSTS`, bare IPs, `localhost`),
+which is what stops DNS rebinding from turning a page you visit into an authenticated admin client.
+
+Sessions are bound to the password, so rotating `ADMIN_PASSWORD` ends any that were already open.
+Cookies are `HttpOnly` and `SameSite=Lax`, plus `Secure` behind TLS. CSP, `X-Frame-Options`,
+`nosniff`, and `Referrer-Policy: no-referrer` are set on every response.
+
+Folders are zipped with symlinks stored as links, never followed, so a link planted in a writable
+share can't pull files from outside the library into the archive.
 
 Known limits:
 
 - No per-IP or per-connection download rate limiting — your reverse proxy is the place for that.
+- Signing out only drops the cookie; the session stays valid server-side until it expires (7 days).
+  Rotating `ADMIN_PASSWORD` is currently the only way to revoke one that's already been captured.
 - No audit log and no second factor.
 - `ADMIN_PASSWORD` is an environment variable, so it's visible to anyone who can run `docker inspect`.
 - Slow hashing raises the cost of guessing; it doesn't rescue a weak password.
