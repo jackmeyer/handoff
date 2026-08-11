@@ -127,9 +127,15 @@ One Node process, one SQLite file, no build step. Node 24+ runs the TypeScript d
 
 ```bash
 npm install
-ADMIN_PASSWORD=devpassword DATA_DIR=./data LIBRARY_DIR=/path/to/some/files npm start
+npm start
 npm test && npm run typecheck
 ```
+
+`npm start` reads local defaults from `.env` (checked into the repo, dev-only credentials —
+`ADMIN_PASSWORD=devpassword`, `DATA_DIR=./data`) via Node's built-in `--env-file-if-exists`, so there's
+nothing to inject by hand for a normal dev loop. A real shell env var still overrides anything in
+`.env`. `LIBRARY_DIR` is commented out by default — uncomment it in `.env` and point it at a folder to
+exercise the "pick from server" tab.
 
 `npm test` starts a real server and covers auth, path traversal, range requests, uploads, passwords,
 download limits, zipping, speed limits, and the expiry rules.
