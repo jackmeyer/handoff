@@ -287,6 +287,31 @@ assert.equal(
 
 step('download limit');
 
+// --- custom alias --------------------------------------------------------------
+const aliased = await mkLink({ source: 'library', path: 'notes.txt', alias: 'my-custom-link' });
+assert.equal(aliased.token, 'my-custom-link', 'alias becomes the token');
+assert.match(aliased.url, /\/d\/my-custom-link$/, 'alias appears in the returned URL');
+assert.equal(await (await fetch(`${base}/f/${aliased.token}/notes.txt`)).text(), 'abcdefghij', 'alias is downloadable');
+
+const dupe = await post('/api/links', { source: 'library', path: 'notes.txt', hours: 1, alias: 'my-custom-link' });
+assert.equal(dupe.status, 409, 'duplicate alias refused');
+
+const badAlias = await post('/api/links', { source: 'library', path: 'notes.txt', hours: 1, alias: 'not/allowed' });
+assert.equal(badAlias.status, 400, 'alias with a slash refused');
+
+const badAlias2 = await post('/api/links', { source: 'library', path: 'notes.txt', hours: 1, alias: '../etc' });
+assert.equal(badAlias2.status, 400, 'alias with dots/traversal chars refused');
+
+const okChars = await mkLink({ source: 'library', path: 'notes.txt', alias: 'a_b-C9' });
+assert.equal(okChars.token, 'a_b-C9', 'letters, numbers, hyphen and underscore accepted');
+
+// Omitted or blank alias still falls back to a random token, unaffected.
+const random1 = await mkLink({ source: 'library', path: 'notes.txt' });
+const random2 = await mkLink({ source: 'library', path: 'notes.txt', alias: '' });
+assert.notEqual(random1.token, random2.token, 'blank alias still generates a random token');
+
+step('custom alias');
+
 // --- range edge cases --------------------------------------------------------
 const MiB = 1 << 20;
 const rate = await mkLink({ source: 'library', path: 'rate.bin' });
