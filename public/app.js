@@ -141,6 +141,7 @@ $('create').onclick = async () => {
     hours: hoursFrom('expNum', 'expUnit'),
     password: $('pass').value || undefined,
     maxDownloads: $('max').value || undefined,
+    alias: $('alias').value.trim() || undefined,
   };
   const r = await api('/api/links', { method: 'POST', body: JSON.stringify(body) });
   const data = await r.json();
@@ -165,7 +166,7 @@ $('create').onclick = async () => {
   const copied = await copy(data.url);
   $('status').textContent = `${copied ? 'Link copied' : 'Link ready'}: ${data.url}`;
   toast(copied ? 'Link copied to clipboard' : 'Link ready — copy it from below');
-  $('pass').value = $('max').value = '';
+  $('pass').value = $('max').value = $('alias').value = '';
   setPick(null);
   refresh();
 };

@@ -12,6 +12,8 @@ Built for homelabbers who want to offer download links without setting up an ent
 - **Or drag a file in** to upload it. Uploads aren't resumable, so put anything huge on the share instead.
 - Links expire after any span you pick — minutes, hours or days — or never, and optionally carry a
   password and a download limit.
+- **Custom link names** are optional — leave it blank for a random token, or set your own
+  (`/d/wedding-photos`) for something easier to read or say out loud.
 - **Cap total download bandwidth** so a share can't saturate your uplink.
 - Range requests are supported, so a large download resumes instead of restarting.
 - Expiry deletes the link and anything Handoff created for it. **Your mounted folder is only ever read

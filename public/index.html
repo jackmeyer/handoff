@@ -53,6 +53,10 @@
     </div>
     <div><label for="pass">Password (optional)</label><input id="pass" type="text" autocomplete="off" /></div>
     <div><label for="max">Download limit (optional)</label><input id="max" type="number" min="1" /></div>
+    <div>
+      <label for="alias">Custom link (optional)</label>
+      <input id="alias" type="text" autocomplete="off" placeholder="e.g. wedding-photos" pattern="[a-zA-Z0-9_-]{1,64}" maxlength="64" />
+    </div>
     <button id="create" class="btn primary" disabled>Create link</button>
   </div>
   <p id="status"></p>

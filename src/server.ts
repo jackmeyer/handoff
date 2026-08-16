@@ -495,6 +495,22 @@ export function createApp(cfg: Config) {
     return Number.isInteger(n) && n >= 1 ? n : undefined;
   };
 
+  // ---- custom alias ----------------------------------------------------------
+  // The token doubles as the URL slug (/d/:token, /f/:token/:name), so a "custom
+  // alias" is just letting the admin pick that value instead of taking the random
+  // one. Restricted to a plain, URL-safe charset — no slashes (which would split
+  // across route segments), no dots-only names, nothing that needs encoding.
+  const ALIAS_RE = /^[a-zA-Z0-9](?:[a-zA-Z0-9_-]{0,62}[a-zA-Z0-9])?$/;
+
+  /** undefined means absent (caller should generate a random token); null means
+   *  invalid, distinct from undefined so a present-but-bad alias is a 400 rather
+   *  than silently falling back to a random one. */
+  const readAlias = (raw: unknown): string | undefined | null => {
+    if (raw === undefined || raw === null || raw === '') return undefined;
+    const s = String(raw).trim();
+    return ALIAS_RE.test(s) ? s : null;
+  };
+
   app.post('/api/links', requireAdmin, (req, res) => {
     const b = req.body ?? {};
     const hours = readHours(b);
@@ -503,7 +519,17 @@ export function createApp(cfg: Config) {
     const maxDownloads = readMaxDownloads(b.maxDownloads);
     if (maxDownloads === undefined) return res.status(400).json({ error: 'Bad download limit' });
 
-    const token = randomBytes(12).toString('base64url');
+    const alias = readAlias(b.alias);
+    if (alias === null) {
+      return res.status(400).json({
+        error: 'Custom link can only use letters, numbers, hyphens and underscores (1–64 characters)',
+      });
+    }
+    if (alias !== undefined && get(alias)) {
+      return res.status(409).json({ error: 'That custom link is already taken' });
+    }
+
+    const token = alias ?? randomBytes(12).toString('base64url');
     const pw = b.password ? hashPw(String(b.password)) : null;
     const expires = at(hours);
     const row = (name: string, filePath: string, owned: number, size: number, status: Link['status']) =>
